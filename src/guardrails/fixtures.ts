@@ -12,6 +12,7 @@ export interface TableTestCase {
   policy: GuardrailPolicy;
   expectedDecision: GuardrailVerdict["decision"];
   expectedCategory?:
+    | "confidential_data"
     | "credential_leak"
     | "pii"
     | "secret_key"
@@ -22,6 +23,7 @@ export interface TableTestCase {
 
 const STRICT_BLOCK_CREDENTIALS_POLICY: GuardrailPolicy = parseGuardrailPolicy({
   categories: {
+    confidential_data: { action: "block", minConfidence: 0.75 },
     credential_leak: { action: "block", minConfidence: 0.6 },
     pii: { action: "redact", minConfidence: 0.75 },
     secret_key: { action: "block", minConfidence: 0.8 },
