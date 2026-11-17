@@ -14,10 +14,18 @@ Rules are asked **one API call per rule, in order**. The page shows every call's
 ## Quick start
 
 ```bash
-cp .env.example .env            # TYPESAFE_API_KEY=...
-make run                        # Docker: build + run → http://localhost:3100
-make dev                        # same thing without Docker (plain node, no deps)
-make test                       # live accuracy run: 21 attack prompts + 5 safe ones, all rules Enforce
+export TYPESAFE_API_KEY=your_key
+
+# Docker
+docker build -t jev-guardrail docker
+docker run --rm -p 3100:3000 -e TYPESAFE_API_KEY=$TYPESAFE_API_KEY jev-guardrail
+# → http://localhost:3100
+
+# Test mode, no Docker (plain node, zero dependencies)
+PORT=3100 node docker/server.js
+
+# Live accuracy run against a running server: 21 attack prompts + 5 safe ones, all rules Enforce
+node docker/test.mjs http://localhost:3100
 ```
 
 `docker/` is self-contained: `server.js` (no dependencies), `rules.json` (the 21 rules — edit the
