@@ -43,6 +43,7 @@ export const CategoryPolicyConfigSchema = z.object({
   action: CategoryActionSchema,
   minConfidence: z.number().min(0).max(1),
   disabledDetectors: z.array(z.string()).optional(),
+  blockDetectors: z.array(z.string()).optional(),
 });
 
 export const GuardrailPolicySchema = z.object({

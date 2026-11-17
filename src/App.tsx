@@ -40,7 +40,10 @@ interface TriggeredRuleReport {
   maskedMatches: string[];
   typesafeNoulProbability: number | null;
   typesafeConfidence: number | null;
-  actionTaken: "Blocked" | "Notified & Sanitized" | "Ignored (Bypassed)";
+  actionTaken:
+    | "Enforced (Blocked)"
+    | "Alerted & Sanitized"
+    | "Ignored (Bypassed)";
 }
 
 interface EntropyItem {
@@ -84,16 +87,19 @@ interface EvaluationApiResponse {
   triggeredRules: TriggeredRuleReport[];
   entropyAnalysis: EntropyItem[];
   typesafeInternals: {
+    endpoint: string;
+    httpStatus: number;
+    requestedModel: string;
     model: string;
-    apiVersion: string;
     architecture: string;
     totalOutputTokens: number;
     totalInputTokens: number | null;
     decisionsLatencyMs: number;
     totalPipelineLatencyMs: number;
     requestPayload: {
+      endpoint: string;
       model: string;
-      inputPreview: string;
+      statePreview: string;
       questionCount: number;
       questions: Record<string, unknown>;
     };
@@ -172,7 +178,15 @@ export default function App() {
   >("all");
   const [editingRule, setEditingRule] = useState<ControlPlaneRule | null>(null);
   const [editPatternDraft, setEditPatternDraft] = useState("");
+  const [editQuestionDraft, setEditQuestionDraft] = useState("");
+  const [editSamplePromptDraft, setEditSamplePromptDraft] = useState("");
 
+  const [presetGroupFilter, setPresetGroupFilter] = useState<
+    "all" | PresetPromptItem["group"] | "Custom User Prompts"
+  >("all");
+  const [customPresets, setCustomPresets] = useState<PresetPromptItem[]>([]);
+  const [customPromptInput, setCustomPromptInput] = useState<string>("");
+  const [customPromptLabel, setCustomPromptLabel] = useState<string>("");
   const [selectedPresetId, setSelectedPresetId] = useState<string>(
     PRESET_PROMPTS[0].id
   );
@@ -191,6 +205,11 @@ export default function App() {
     results: TestSuiteResultItem[];
   } | null>(null);
   const [isLoadingTests, setIsLoadingTests] = useState(false);
+  const [typesafeStatus, setTypesafeStatus] = useState<{
+    connected: boolean;
+    endpoint: string;
+    model: string;
+  } | null>(null);
 
   // Instant client-side preview of the strict TypeScript evaluatePrompt contract
   const livePolicy = useMemo(
@@ -251,7 +270,9 @@ export default function App() {
 
   const handleOpenEditModal = (rule: ControlPlaneRule) => {
     setEditingRule(rule);
-    setEditPatternDraft(rule.customPatternDescription ?? "");
+    setEditPatternDraft(rule.customPatternDescription);
+    setEditQuestionDraft(rule.typesafeQuestion.instructions);
+    setEditSamplePromptDraft(rule.sampleViolationPrompt);
   };
 
   const handleSaveRuleEdit = (e: React.FormEvent) => {
@@ -260,17 +281,65 @@ export default function App() {
     setRules((prev) =>
       prev.map((r) =>
         r.id === editingRule.id
-          ? { ...r, customPatternDescription: editPatternDraft.trim() }
+          ? {
+              ...r,
+              customPatternDescription: editPatternDraft.trim(),
+              sampleViolationPrompt: editSamplePromptDraft.trim(),
+              typesafeQuestion: {
+                ...r.typesafeQuestion,
+                instructions: editQuestionDraft.trim(),
+              },
+            }
           : r
       )
     );
     setEditingRule(null);
   };
 
+  const handleTestSingleRule = (rule: ControlPlaneRule) => {
+    setSelectedPresetId(`preset-${rule.id}`);
+    setPromptInput(rule.sampleViolationPrompt);
+    setEvalError(null);
+    runTypeSafeEvaluation(rule.sampleViolationPrompt);
+  };
+
   const handleSelectPreset = (preset: PresetPromptItem) => {
     setSelectedPresetId(preset.id);
     setPromptInput(preset.prompt);
     setEvalError(null);
+  };
+
+  const handleTestCustomPrompt = () => {
+    const trimmed = customPromptInput.trim();
+    if (!trimmed) {
+      setEvalError("Please enter a custom prompt in the custom prompt textarea.");
+      return;
+    }
+    setSelectedPresetId("custom-active");
+    setPromptInput(trimmed);
+    setEvalError(null);
+    runTypeSafeEvaluation(trimmed);
+  };
+
+  const handleSaveCustomPreset = () => {
+    const trimmed = customPromptInput.trim();
+    if (!trimmed) return;
+    const newId = `custom-${Date.now()}`;
+    const label =
+      customPromptLabel.trim() ||
+      `Custom Prompt #${customPresets.length + 1}`;
+    const newPreset: PresetPromptItem = {
+      id: newId,
+      label,
+      group: "4. Safe & Negative Fixtures (4)",
+      badge: "Custom",
+      prompt: trimmed,
+      expectedBehavior: "User-defined custom test prompt",
+    };
+    setCustomPresets((prev) => [newPreset, ...prev]);
+    setSelectedPresetId(newId);
+    setPromptInput(trimmed);
+    setCustomPromptLabel("");
   };
 
   const runTypeSafeEvaluation = async (overridePrompt?: string) => {
@@ -325,6 +394,12 @@ export default function App() {
 
   useEffect(() => {
     fetchTestSuite();
+    fetch("/api/typesafe-status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) setTypesafeStatus(d);
+      })
+      .catch(() => {});
   }, []);
 
   const primaryChoiceAnswer = useMemo(() => {
@@ -479,7 +554,7 @@ export default function App() {
                 {rules.length}
               </span>
               <span className="text-xs text-neutral-400 tabular-nums">
-                {ruleModeCounts.block} Block · {ruleModeCounts.detect} Detect ·{" "}
+                {ruleModeCounts.block} Enforce · {ruleModeCounts.detect} Alert ·{" "}
                 {ruleModeCounts.ignore} Ignore
               </span>
             </div>
@@ -511,14 +586,24 @@ export default function App() {
 
           <div className="bg-[#12151E] border border-neutral-800 rounded-lg p-4">
             <div className="text-xs text-neutral-400">
-              TypeSafe Model Engine (System-1)
+              TypeSafe Endpoint (docs.typesafe.ai)
             </div>
-            <div className="mt-1 flex items-baseline justify-between">
-              <span className="text-sm font-semibold text-white font-mono">
-                gemini-decision-1
+            <div className="mt-1 flex items-baseline justify-between gap-2">
+              <span className="text-sm font-semibold text-white font-mono truncate">
+                {apiResult?.typesafeInternals.model ??
+                  typesafeStatus?.model ??
+                  "jev-latest"}
               </span>
-              <span className="text-xs text-emerald-400 font-mono tabular-nums">
-                output_tokens: 0
+              <span
+                className={`text-xs font-mono tabular-nums shrink-0 ${
+                  typesafeStatus?.connected === false
+                    ? "text-amber-400"
+                    : "text-emerald-400"
+                }`}
+              >
+                {typesafeStatus?.connected === false
+                  ? "Key Missing"
+                  : "api.typesafe.ai/v1"}
               </span>
             </div>
           </div>
@@ -590,11 +675,18 @@ export default function App() {
                       {tr.ruleName}
                     </div>
                     <div className="text-neutral-400 font-mono text-[11px] mt-0.5 truncate">
-                      <span>Mode: {tr.mode}</span>
+                      <span>
+                        Toggle:{" "}
+                        {tr.mode === "Block"
+                          ? "Enforce"
+                          : tr.mode === "Detect"
+                          ? "Alert"
+                          : "Ignore"}
+                      </span>
                       <span aria-hidden="true"> · </span>
                       <span>
                         {tr.typesafeNoulProbability !== null
-                          ? `P(viol)=${(tr.typesafeNoulProbability * 100).toFixed(1)}%`
+                          ? `noul=${(tr.typesafeNoulProbability * 100).toFixed(1)}%`
                           : "Regex Match"}
                       </span>
                       {tr.maskedMatches.length > 0 && (
@@ -609,9 +701,9 @@ export default function App() {
                   </div>
                   <span
                     className={`text-[11px] font-medium shrink-0 ${
-                      tr.actionTaken === "Blocked"
+                      tr.actionTaken === "Enforced (Blocked)"
                         ? "text-rose-400"
-                        : tr.actionTaken === "Notified & Sanitized"
+                        : tr.actionTaken === "Alerted & Sanitized"
                         ? "text-amber-400"
                         : "text-neutral-500"
                     }`}
@@ -646,12 +738,12 @@ export default function App() {
                       Guardrails ({filteredRules.length} of {rules.length} Deduplicated)
                     </h2>
                     <p className="text-xs text-neutral-400 mt-0.5">
-                      Set each guardrail to{" "}
-                      <strong className="text-neutral-200">Block</strong>{" "}
-                      (enforce),{" "}
-                      <strong className="text-neutral-200">Detect</strong>{" "}
-                      (middle mode: notify & sanitize), or{" "}
-                      <strong className="text-neutral-200">Ignore</strong>{" "}
+                      Toggle each guardrail: Left{" "}
+                      <strong className="text-rose-300">Enforce</strong>{" "}
+                      (block), Middle{" "}
+                      <strong className="text-amber-300">Alert</strong>{" "}
+                      (notify &amp; sanitize), or Right{" "}
+                      <strong className="text-neutral-300">Ignore</strong>{" "}
                       (disable).
                     </p>
                   </div>
@@ -662,14 +754,21 @@ export default function App() {
                       onClick={() => handleBulkSetMode("Block")}
                       className="px-2.5 py-1 text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                     >
-                      All Block
+                      All Enforce
                     </button>
                     <button
                       type="button"
                       onClick={() => handleBulkSetMode("Detect")}
                       className="px-2.5 py-1 text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                     >
-                      All Detect
+                      All Alert
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleBulkSetMode("Ignore")}
+                      className="px-2.5 py-1 text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-400 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      All Ignore
                     </button>
                     <button
                       type="button"
@@ -758,8 +857,17 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Right Controls matching Screenshot UI: [Edit] | [High Icon + High] | [□□■□□] | [Select: Detect / Block / Ignore] */}
-                      <div className="flex items-center gap-4 shrink-0">
+                      {/* Right Controls: [Test] | [Edit] | [High Icon + High] | [□□■□□] | [3-Way Toggle: Enforce | Alert | Ignore] */}
+                      <div className="flex items-center gap-3 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleTestSingleRule(rule)}
+                          title={`Load and evaluate test prompt for ${rule.name}`}
+                          className="px-2 py-0.5 text-[11px] font-medium text-emerald-300 hover:text-emerald-200 bg-emerald-950/40 hover:bg-emerald-950/70 border border-emerald-800/60 rounded transition-colors cursor-pointer"
+                        >
+                          Test
+                        </button>
+
                         {rule.editable && (
                           <button
                             type="button"
@@ -770,40 +878,65 @@ export default function App() {
                           </button>
                         )}
 
-                        <div className="flex items-center gap-1.5 text-xs text-neutral-200 w-14">
+                        <div className="hidden sm:flex items-center gap-1.5 text-xs text-neutral-200 w-14">
                           <HighSeverityStackIcon />
                           <span>{rule.severity}</span>
                         </div>
 
-                        <div className="w-12 hidden sm:flex justify-center">
+                        <div className="w-11 hidden xl:flex justify-center">
                           {rule.hasSensitivityDots ? (
                             <SensitivityDotsIndicator />
                           ) : null}
                         </div>
 
-                        <div className="relative">
-                          <select
-                            aria-label={`${rule.name} mode`}
-                            value={rule.mode}
-                            onChange={(e) =>
-                              handleRuleModeChange(
-                                rule.id,
-                                e.target.value as RuleEnforcementMode
-                              )
+                        {/* 3-State Segmented Toggle: Left (Enforce) | Middle (Alert) | Right (Ignore) */}
+                        <div
+                          role="group"
+                          aria-label={`${rule.name} enforcement toggle`}
+                          className="inline-flex items-center bg-[#0B0D11] border border-neutral-800 rounded-md p-0.5"
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleRuleModeChange(rule.id, "Block")
                             }
-                            className={`appearance-none w-28 bg-[#161922] border rounded px-3 py-1.5 pr-7 text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
+                            aria-pressed={rule.mode === "Block"}
+                            className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                               rule.mode === "Block"
-                                ? "border-rose-700/80 text-rose-200"
-                                : rule.mode === "Detect"
-                                ? "border-neutral-700 text-neutral-200"
-                                : "border-neutral-800 text-neutral-500"
+                                ? "bg-rose-600 text-white shadow-xs"
+                                : "text-neutral-400 hover:text-neutral-200"
                             }`}
                           >
-                            <option value="Detect">Detect</option>
-                            <option value="Block">Block</option>
-                            <option value="Ignore">Ignore</option>
-                          </select>
-                          <ChevronDown className="w-3.5 h-3.5 text-neutral-400 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2" />
+                            Enforce
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleRuleModeChange(rule.id, "Detect")
+                            }
+                            aria-pressed={rule.mode === "Detect"}
+                            className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                              rule.mode === "Detect"
+                                ? "bg-amber-500 text-neutral-950 font-semibold shadow-xs"
+                                : "text-neutral-400 hover:text-neutral-200"
+                            }`}
+                          >
+                            Alert
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleRuleModeChange(rule.id, "Ignore")
+                            }
+                            aria-pressed={rule.mode === "Ignore"}
+                            className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                              rule.mode === "Ignore"
+                                ? "bg-neutral-700 text-neutral-100 shadow-xs"
+                                : "text-neutral-500 hover:text-neutral-300"
+                            }`}
+                          >
+                            Ignore
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -812,68 +945,208 @@ export default function App() {
               </div>
             </section>
 
-            {/* Right Column: Prompt Ingestion Playground, Presets, & Sanitized Output */}
-            {activeNavTab === "workspace" && (
+            {/* Right Column: Custom Prompt Textarea, Preset Library, & Sanitized Output */}
+            {(activeNavTab === "workspace" ||
+              activeNavTab === "control-plane") && (
               <section
                 aria-label="Prompt Ingestion and Output Sanitization Playground"
-                className="lg:col-span-6 flex flex-col gap-5"
+                className={`${
+                  activeNavTab === "workspace" ? "lg:col-span-6" : "col-span-1"
+                } flex flex-col gap-5`}
               >
-                {/* Preset Prompt Library */}
-                <div className="bg-[#111318] border border-neutral-800 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
-                      Preset Test Prompts (Malicious, Credential Leaks, & Harmless)
-                    </h2>
-                    <span className="text-xs text-neutral-400">
-                      Click to load
-                    </span>
+                {/* Dedicated Custom Prompt Tester Card */}
+                <div className="bg-[#111318] border border-emerald-500/40 rounded-lg p-4 flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <label
+                        htmlFor="custom-prompt-textarea"
+                        className="text-xs font-semibold uppercase tracking-wider text-emerald-400 block"
+                      >
+                        Custom Prompt Tester (Write or Paste Any Prompt)
+                      </label>
+                      <p className="text-xs text-neutral-400 mt-0.5">
+                        Test your own custom prompt directly against all active
+                        Control Plane guardrails and{" "}
+                        <code className="font-mono">jev-latest</code>.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {customPromptInput && (
+                        <button
+                          type="button"
+                          onClick={() => setCustomPromptInput("")}
+                          className="px-2.5 py-1 text-xs text-neutral-400 hover:text-white bg-neutral-900 border border-neutral-800 rounded cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      )}
+                      <span className="text-xs text-neutral-400 font-mono tabular-nums">
+                        {customPromptInput.length} chars
+                      </span>
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    {PRESET_PROMPTS.map((preset) => {
-                      const isSelected = selectedPresetId === preset.id;
-                      return (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          onClick={() => handleSelectPreset(preset)}
-                          className={`text-left p-2.5 rounded border transition-colors cursor-pointer flex flex-col justify-between ${
-                            isSelected
-                              ? "bg-neutral-800/90 border-emerald-500/80 text-white"
-                              : "bg-[#0B0D11] border-neutral-800/90 text-neutral-300 hover:border-neutral-700"
-                          }`}
-                        >
-                          <div className="text-[11px] text-neutral-400 flex items-center justify-between gap-1">
-                            <span className="truncate">{preset.group}</span>
-                          </div>
-                          <div className="text-xs font-medium text-neutral-100 mt-1 line-clamp-2">
-                            {preset.label}
-                          </div>
-                        </button>
-                      );
-                    })}
+                  <textarea
+                    id="custom-prompt-textarea"
+                    rows={3}
+                    value={customPromptInput}
+                    onChange={(e) => setCustomPromptInput(e.target.value)}
+                    placeholder="Type or paste any custom prompt here (e.g. a custom jailbreak attempt, a secret token, PII, or a benign question)..."
+                    className="w-full bg-[#0B0D11] border border-neutral-700 rounded-md p-3 text-sm font-mono text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-emerald-400 resize-y"
+                  />
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-1">
+                      <input
+                        type="text"
+                        value={customPromptLabel}
+                        onChange={(e) => setCustomPromptLabel(e.target.value)}
+                        placeholder="Optional label to save as preset..."
+                        aria-label="Custom preset label"
+                        className="flex-1 bg-[#0B0D11] border border-neutral-800 rounded px-2.5 py-1.5 text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-neutral-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSaveCustomPreset}
+                        disabled={!customPromptInput.trim()}
+                        className="px-3 py-1.5 text-xs font-medium bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-200 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        Save Preset
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleTestCustomPrompt}
+                      disabled={isEvaluating || !customPromptInput.trim()}
+                      className="px-4 py-1.5 text-xs font-semibold text-neutral-950 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-40 rounded transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>
+                        {isEvaluating
+                          ? "Evaluating..."
+                          : "Test Custom Prompt"}
+                      </span>
+                    </button>
                   </div>
                 </div>
 
-                {/* Prompt Ingestion Input Box */}
+                {/* Preset Prompt Library (21 Guardrail Prompts + 4 Safe/Negative Fixtures + Custom Saved) */}
+                <div className="bg-[#111318] border border-neutral-800 rounded-lg p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                    <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
+                      Preset Test Prompts (1 per Guardrail Rule + Safe + Custom)
+                    </h2>
+                    <div className="flex items-center gap-1 bg-[#0B0D11] p-1 rounded border border-neutral-800 overflow-x-auto">
+                      {(
+                        [
+                          {
+                            id: "all",
+                            label: `All (${
+                              PRESET_PROMPTS.length + customPresets.length
+                            })`,
+                          },
+                          { id: "1. PII Guardrails (6)", label: "PII (6)" },
+                          {
+                            id: "2. Credentials & Secrets (1)",
+                            label: "Credentials (1)",
+                          },
+                          {
+                            id: "3. Injection, Execution & Policy (14)",
+                            label: "Injection & System (14)",
+                          },
+                          {
+                            id: "4. Safe & Negative Fixtures (4)",
+                            label: "Safe & Custom",
+                          },
+                        ] as const
+                      ).map((grp) => (
+                        <button
+                          key={grp.id}
+                          type="button"
+                          onClick={() => setPresetGroupFilter(grp.id)}
+                          className={`px-2 py-0.5 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                            presetGroupFilter === grp.id
+                              ? "bg-neutral-800 text-white"
+                              : "text-neutral-400 hover:text-neutral-200"
+                          }`}
+                        >
+                          {grp.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
+                    {[...customPresets, ...PRESET_PROMPTS]
+                      .filter(
+                        (p) =>
+                          presetGroupFilter === "all" ||
+                          p.group === presetGroupFilter
+                      )
+                      .map((preset) => {
+                        const isSelected = selectedPresetId === preset.id;
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => handleSelectPreset(preset)}
+                            className={`text-left p-2.5 rounded border transition-colors cursor-pointer flex flex-col justify-between ${
+                              isSelected
+                                ? "bg-neutral-800/90 border-emerald-500/80 text-white"
+                                : "bg-[#0B0D11] border-neutral-800/90 text-neutral-300 hover:border-neutral-700"
+                            }`}
+                          >
+                            <div className="text-[11px] text-neutral-400 flex items-center justify-between gap-1">
+                              <span className="truncate">
+                                {preset.badge === "Custom"
+                                  ? "Custom User Prompt"
+                                  : preset.group}
+                              </span>
+                            </div>
+                            <div className="text-xs font-medium text-neutral-100 mt-1 line-clamp-1">
+                              {preset.label}
+                            </div>
+                            <div className="text-[11px] text-neutral-500 mt-0.5 line-clamp-1 font-mono">
+                              {preset.prompt}
+                            </div>
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+
+                {/* Active Prompt Ingestion Payload Box */}
                 <div className="bg-[#111318] border border-neutral-800 rounded-lg p-4 flex flex-col gap-3">
                   <div className="flex items-center justify-between">
                     <label
                       htmlFor="prompt-ingestion-textarea"
                       className="text-xs font-semibold uppercase tracking-wider text-neutral-300"
                     >
-                      Prompt Ingestion Payload
+                      Active Ingestion Payload (Editable)
                     </label>
-                    <span className="text-xs text-neutral-400 font-mono">
-                      {promptInput.length} chars
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPromptInput("")}
+                        className="text-xs text-neutral-400 hover:text-white cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                      <span className="text-xs text-neutral-400 font-mono">
+                        {promptInput.length} chars
+                      </span>
+                    </div>
                   </div>
 
                   <textarea
                     id="prompt-ingestion-textarea"
                     rows={4}
                     value={promptInput}
-                    onChange={(e) => setPromptInput(e.target.value)}
+                    onChange={(e) => {
+                      setPromptInput(e.target.value);
+                      setSelectedPresetId("edited");
+                    }}
                     placeholder="Enter a malicious prompt, secret key leak, or harmless query to test the guardrail control plane..."
                     className="w-full bg-[#0B0D11] border border-neutral-800 rounded-md p-3 text-sm font-mono text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-emerald-500/80 resize-y"
                   />
@@ -1007,8 +1280,11 @@ export default function App() {
                         Click &ldquo;Run Full TypeSafe Evaluation&rdquo; to
                         ingest the prompt through both the deterministic
                         TypeScript guardrail module and the live non-regressive{" "}
-                        <code className="font-mono">gemini-decision-1</code>{" "}
-                        model API.
+                        <code className="font-mono">
+                          https://api.typesafe.ai/v1/systemone
+                        </code>{" "}
+                        (<code className="font-mono">jev-latest</code>) model
+                        API.
                       </p>
                     </div>
                   )}
@@ -1081,7 +1357,11 @@ export default function App() {
                               </span>
                               <span className="text-neutral-500">·</span>
                               <span className="text-neutral-400 font-mono text-[11px]">
-                                {rule.mode}
+                                {rule.mode === "Block"
+                                  ? "Enforce"
+                                  : rule.mode === "Detect"
+                                  ? "Alert"
+                                  : "Ignore"}
                               </span>
                             </div>
                             <div className="font-mono text-xs tabular-nums flex items-center gap-3">
@@ -1223,11 +1503,18 @@ export default function App() {
 
                   <div className="bg-[#0B0D11] border border-neutral-800 rounded-lg p-4">
                     <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-2">
-                      Zod-Validated <code className="font-mono">GuardrailPolicy</code>{" "}
-                      (Load-Time Schema)
+                      TypeSafe Endpoint Request (
+                      <code className="font-mono text-emerald-400">
+                        {apiResult.typesafeInternals.endpoint}
+                      </code>
+                      )
                     </h3>
                     <pre className="text-xs font-mono text-neutral-300 bg-[#111318] border border-neutral-800 rounded p-3 max-h-48 overflow-y-auto">
-                      {JSON.stringify(apiResult.compiledPolicy, null, 2)}
+                      {JSON.stringify(
+                        apiResult.typesafeInternals.requestPayload,
+                        null,
+                        2
+                      )}
                     </pre>
                   </div>
                 </div>
@@ -1370,14 +1657,46 @@ export default function App() {
                   htmlFor="custom-policy-description"
                   className="block text-xs font-medium text-neutral-300 mb-1.5"
                 >
-                  Custom Detection Criteria (Injected into TypeSafe{" "}
-                  <code className="font-mono">noul</code> question instructions)
+                  Guardrail Rule Specification
                 </label>
                 <textarea
                   id="custom-policy-description"
-                  rows={3}
+                  rows={2}
                   value={editPatternDraft}
                   onChange={(e) => setEditPatternDraft(e.target.value)}
+                  className="w-full bg-[#0B0D11] border border-neutral-800 rounded p-2.5 text-xs font-mono text-neutral-100 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="custom-typesafe-question"
+                  className="block text-xs font-medium text-neutral-300 mb-1.5"
+                >
+                  TypeSafe System One (<code className="font-mono">noul</code>)
+                  Question Instructions
+                </label>
+                <textarea
+                  id="custom-typesafe-question"
+                  rows={2}
+                  value={editQuestionDraft}
+                  onChange={(e) => setEditQuestionDraft(e.target.value)}
+                  className="w-full bg-[#0B0D11] border border-neutral-800 rounded p-2.5 text-xs font-mono text-neutral-100 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="custom-sample-prompt"
+                  className="block text-xs font-medium text-neutral-300 mb-1.5"
+                >
+                  Dedicated Rule Test Prompt
+                </label>
+                <textarea
+                  id="custom-sample-prompt"
+                  rows={2}
+                  value={editSamplePromptDraft}
+                  onChange={(e) => setEditSamplePromptDraft(e.target.value)}
                   className="w-full bg-[#0B0D11] border border-neutral-800 rounded p-2.5 text-xs font-mono text-neutral-100 focus:outline-none focus:border-emerald-500"
                 />
               </div>
@@ -1394,7 +1713,7 @@ export default function App() {
                   type="submit"
                   className="px-3.5 py-1.5 text-xs font-semibold text-neutral-950 bg-emerald-400 hover:bg-emerald-300 rounded cursor-pointer"
                 >
-                  Save Policy Criteria
+                  Save Guardrail Rule
                 </button>
               </div>
             </form>

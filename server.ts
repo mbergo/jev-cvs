@@ -3,7 +3,6 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI } from "@google/genai";
 import {
   ALL_PURE_DETECTORS,
   calculateShannonEntropy,
@@ -15,12 +14,10 @@ import {
   evaluatePrompt,
   formatVerdictAuditLog,
 } from "./src/guardrails/evaluator";
-import {
-  DEFAULT_GUARDRAIL_POLICY,
-  type Finding,
-  type GuardrailCategory,
-  type GuardrailVerdict,
-  parseGuardrailPolicy,
+import type {
+  Finding,
+  GuardrailCategory,
+  GuardrailVerdict,
 } from "./src/guardrails/types";
 import {
   buildGuardrailPolicyFromControlPlane,
@@ -33,40 +30,105 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
+const TYPESAFE_API_BASE = "https://api.typesafe.ai/v1";
 
-function getDecisionsClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "GEMINI_API_KEY is not configured. Please check the Settings > Secrets panel."
-    );
-  }
-  return new GoogleGenAI({
-    apiKey,
-    apiVersion: "v1beta",
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
-      },
-    },
-  });
+interface TypeSafeSystemOneResponse {
+  model?: string;
+  answers?: Record<
+    string,
+    | {
+        type: "noul";
+        noul: number;
+        confidence?: number;
+      }
+    | {
+        type: "choice";
+        choice: string;
+        probabilities: Record<string, number>;
+        confidence: number;
+      }
+    | {
+        type: "score";
+        score: number;
+        probabilities: Record<string, number>;
+        legend?: Record<string, string>;
+        confidence: number;
+      }
+  >;
+  usage?: {
+    prompt_tokens?: number;
+    input_tokens?: number;
+    total_tokens?: number;
+    total_input_tokens?: number;
+    total_output_tokens?: number;
+  };
+  error?:
+    | {
+        message?: string;
+        type?: string;
+        code?: string;
+      }
+    | string;
 }
 
-function getGenClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+/**
+ * Calls the real TypeSafe System One (Jev) non-regressive model endpoint directly.
+ * Zero fallback: if TYPESAFE_API_KEY is missing or the API returns an error, it throws immediately.
+ */
+async function callTypeSafeSystemOne(
+  stateText: string,
+  questions: Record<string, unknown>
+): Promise<{
+  data: TypeSafeSystemOneResponse;
+  endpointUsed: string;
+  statusCode: number;
+}> {
+  const typesafeKey = process.env.TYPESAFE_API_KEY?.trim();
+  if (!typesafeKey) {
     throw new Error(
-      "GEMINI_API_KEY is not configured. Please check the Settings > Secrets panel."
+      "TYPESAFE_API_KEY is missing from environment secrets. Configure TYPESAFE_API_KEY in Settings > Secrets and restart the server."
     );
   }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
-      },
+
+  const endpoint = `${TYPESAFE_API_BASE}/systemone`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${typesafeKey}`,
+      "Content-Type": "application/json",
     },
+    body: JSON.stringify({
+      model: "jev-latest",
+      state: stateText,
+      questions,
+    }),
   });
+
+  const rawText = await response.text();
+  let parsed: TypeSafeSystemOneResponse = {};
+  try {
+    parsed = JSON.parse(rawText) as TypeSafeSystemOneResponse;
+  } catch {
+    throw new Error(
+      `TypeSafe API (${endpoint}) returned non-JSON HTTP ${response.status}: ${rawText.slice(0, 240)}`
+    );
+  }
+
+  if (!response.ok) {
+    const errDetail =
+      typeof parsed.error === "string"
+        ? parsed.error
+        : parsed.error?.message ?? rawText.slice(0, 240);
+    throw new Error(
+      `TypeSafe API HTTP ${response.status} (${endpoint}): ${errDetail}`
+    );
+  }
+
+  return {
+    data: parsed,
+    endpointUsed: endpoint,
+    statusCode: response.status,
+  };
 }
 
 interface TriggeredRuleReport {
@@ -78,12 +140,72 @@ interface TriggeredRuleReport {
   maskedMatches: string[];
   typesafeNoulProbability: number | null;
   typesafeConfidence: number | null;
-  actionTaken: "Blocked" | "Notified & Sanitized" | "Ignored (Bypassed)";
+  actionTaken:
+    | "Enforced (Blocked)"
+    | "Alerted & Sanitized"
+    | "Ignored (Bypassed)";
 }
 
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
+
+  // Endpoint 0: Live TypeSafe Endpoint Access & Models Check (No fallback)
+  app.get("/api/typesafe-status", async (_req, res) => {
+    const key = process.env.TYPESAFE_API_KEY?.trim();
+    if (!key) {
+      res.status(401).json({
+        connected: false,
+        endpoint: `${TYPESAFE_API_BASE}/systemone`,
+        model: "jev-latest",
+        error: "TYPESAFE_API_KEY is not set in environment.",
+      });
+      return;
+    }
+
+    try {
+      const modelsResp = await fetch(`${TYPESAFE_API_BASE}/models`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${key}`,
+        },
+      });
+      const rawBody = await modelsResp.text();
+      if (!modelsResp.ok) {
+        res.status(modelsResp.status).json({
+          connected: false,
+          endpoint: `${TYPESAFE_API_BASE}/systemone`,
+          model: "jev-latest",
+          error: `GET /v1/models returned HTTP ${modelsResp.status}: ${rawBody.slice(0, 200)}`,
+        });
+        return;
+      }
+
+      let modelsData: unknown = rawBody;
+      try {
+        modelsData = JSON.parse(rawBody);
+      } catch {
+        // keep text
+      }
+
+      res.json({
+        connected: true,
+        endpoint: `${TYPESAFE_API_BASE}/systemone`,
+        model: "jev-latest",
+        modelsData,
+      });
+    } catch (err: unknown) {
+      res.status(502).json({
+        connected: false,
+        endpoint: `${TYPESAFE_API_BASE}/systemone`,
+        model: "jev-latest",
+        error:
+          err instanceof Error
+            ? err.message
+            : "Failed to reach api.typesafe.ai",
+      });
+    }
+  });
 
   // Endpoint 1: Run the Table-Driven Contract Test Suite
   app.get("/api/test-suite", (_req, res) => {
@@ -131,7 +253,7 @@ async function startServer() {
     });
   });
 
-  // Endpoint 2: Full TypeSafe Non-Regressive Guardrail & Deterministic Contract Evaluation
+  // Endpoint 2: Pure TypeSafe Non-Regressive Guardrail Evaluation (No fallbacks)
   app.post("/api/evaluate", async (req, res) => {
     const requestStart = performance.now();
     try {
@@ -151,7 +273,7 @@ async function startServer() {
       // 1. Build & validate strict GuardrailPolicy via Zod
       const compiledPolicy = buildGuardrailPolicyFromControlPlane(rules);
 
-      // 2. Run all pure deterministic detectors to inspect raw findings (masked)
+      // 2. Run pure deterministic detectors to inspect masked findings
       const allDetectorFindings: Finding[] = [];
       for (const detector of ALL_PURE_DETECTORS) {
         const found = detector(rawPrompt);
@@ -159,25 +281,25 @@ async function startServer() {
       }
 
       // Compute token entropy telemetry for the TypeSafe internals panel
-      const candidateTokens: string[] =
-        rawPrompt.match(/[A-Za-z0-9+/=_-]{12,}/g) ?? [];
-      const entropyAnalysis = candidateTokens.slice(0, 6).map((tok: string) => ({
-        maskedToken: maskMatch(tok),
-        length: tok.length,
-        shannonEntropy: Number(calculateShannonEntropy(tok).toFixed(2)),
-        exceedsThreshold:
-          tok.length >= 20 && calculateShannonEntropy(tok) >= 4.5,
-      }));
+      const candidateTokens: string[] = rawPrompt.match(/\S{12,}/g) ?? [];
+      const entropyAnalysis = candidateTokens.slice(0, 6).map((rawTok: string) => {
+        const tok = rawTok.replace(/^[("'`]+|[.,;!?)"'`]+$/g, "");
+        return {
+          maskedToken: maskMatch(tok),
+          length: tok.length,
+          shannonEntropy: Number(calculateShannonEntropy(tok).toFixed(2)),
+          exceedsThreshold:
+            tok.length >= 20 && calculateShannonEntropy(tok) >= 4.5,
+        };
+      });
 
       // 3. Run the strict contract function: evaluatePrompt(input, policy)
       const contractVerdict: GuardrailVerdict = evaluatePrompt(
         rawPrompt,
         compiledPolicy
       );
-      const contractAuditLog = formatVerdictAuditLog(contractVerdict);
 
-      // 4. Build TypeSafe / Gemini Decisions API (gemini-decision-1) non-regressive request
-      // Each non-ignored rule becomes a calibrated `noul` question, plus `choice` and `score` questions
+      // 4. Build TypeSafe System One (`POST https://api.typesafe.ai/v1/systemone`) request
       const activeRules = rules.filter((r) => r.mode !== "Ignore");
 
       const questionsPayload: Record<string, unknown> = {};
@@ -223,7 +345,6 @@ async function startServer() {
         criteria: severityCriteria,
       };
 
-      // Sanitize the prompt before sending to any downstream model or showing in logs
       const allActiveFindings = allDetectorFindings.filter((f) => {
         const matchingRule = rules.find(
           (r) =>
@@ -239,20 +360,32 @@ async function startServer() {
         allActiveFindings.length > 0 ? allActiveFindings : allDetectorFindings
       );
 
+      // Call the live TypeSafe System One API directly (throws on error, no fallback)
       const decisionsStart = performance.now();
-      const decisionsAi = getDecisionsClient();
-      const decisionResult = await decisionsAi.decisions.create({
-        model: "gemini-decision-1",
-        input: rawPrompt,
-        questions: questionsPayload as Parameters<
-          typeof decisionsAi.decisions.create
-        >[0]["questions"],
-      });
+      const { data: decisionResult, endpointUsed, statusCode } =
+        await callTypeSafeSystemOne(rawPrompt, questionsPayload);
       const decisionsLatencyMs = Math.round(performance.now() - decisionsStart);
 
-      const answers = decisionResult.answers ?? {};
+      const rawAnswers = decisionResult.answers ?? {};
+      const normalizedAnswers: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(rawAnswers)) {
+        if (val && val.type === "noul") {
+          const noulVal = typeof val.noul === "number" ? val.noul : 0;
+          const confVal =
+            typeof val.confidence === "number"
+              ? val.confidence
+              : Math.max(noulVal, 1 - noulVal);
+          normalizedAnswers[k] = {
+            type: "noul",
+            noul: noulVal,
+            confidence: confVal,
+          };
+        } else {
+          normalizedAnswers[k] = val;
+        }
+      }
 
-      // 5. Combine deterministic detectors + non-regressive TypeSafe `noul` probabilities per Control Plane rule
+      // 5. Evaluate per-rule triggers from TypeSafe `noul` probabilities + deterministic contract
       const ruleReports: TriggeredRuleReport[] = [];
       for (const rule of rules) {
         const matchedFindings = allDetectorFindings.filter((f) => {
@@ -264,7 +397,9 @@ async function startServer() {
           return f.detector === rule.detectorKey;
         });
 
-        const ans = answers[rule.id];
+        const ans = normalizedAnswers[rule.id] as
+          | { type: "noul"; noul: number; confidence: number }
+          | undefined;
         const noulProb =
           ans && ans.type === "noul" ? Number(ans.noul.toFixed(4)) : null;
         const noulConf =
@@ -275,9 +410,9 @@ async function startServer() {
 
         if (deterministicMatched || modelTriggered) {
           let actionTaken: TriggeredRuleReport["actionTaken"] =
-            "Notified & Sanitized";
+            "Alerted & Sanitized";
           if (rule.mode === "Block") {
-            actionTaken = "Blocked";
+            actionTaken = "Enforced (Blocked)";
           } else if (rule.mode === "Ignore") {
             actionTaken = "Ignored (Bypassed)";
           }
@@ -296,8 +431,7 @@ async function startServer() {
         }
       }
 
-      // If the non-regressive TypeSafe model caught a rule that wasn't caught by regex alone,
-      // reconcile the effective verdict so both engines protect the pipeline.
+      // Reconcile the effective verdict from TypeSafe Jev & deterministic contract
       let effectiveVerdict: GuardrailVerdict = contractVerdict;
       const blockingRuleReport = ruleReports.find((r) => r.mode === "Block");
       const detectingRuleReports = ruleReports.filter(
@@ -309,7 +443,7 @@ async function startServer() {
         effectiveVerdict = {
           decision: "block",
           category: blockingRuleReport.category,
-          reason: `Blocked by TypeSafe non-regressive model rule "${blockingRuleReport.ruleName}" (P(violation)=${blockingRuleReport.typesafeNoulProbability ?? 0.95})`,
+          reason: `Enforced by TypeSafe Jev rule "${blockingRuleReport.ruleName}" (noul=${blockingRuleReport.typesafeNoulProbability ?? 0.95})`,
           span,
         };
       } else if (
@@ -319,8 +453,7 @@ async function startServer() {
         const primary = detectingRuleReports[0];
         const syntheticFindings: Finding[] = detectingRuleReports.map((r) => ({
           category: r.category,
-          match:
-            r.maskedMatches[0] ?? maskMatch(rawPrompt.slice(0, 12)),
+          match: r.maskedMatches[0] ?? maskMatch(rawPrompt.slice(0, 12)),
           confidence: r.typesafeNoulProbability ?? 0.85,
           detector: r.ruleId,
         }));
@@ -332,58 +465,25 @@ async function startServer() {
         };
       }
 
-      // 6. Generate downstream sanitized response if not blocked
+      // 6. Sanitized output produced directly by the guardrail pipeline (no LLM fallback)
       let sanitizedEndUserOutput = "";
-      let downstreamStatus: "blocked" | "sanitized_and_completed" | "clean_completed" =
-        "clean_completed";
+      let downstreamStatus:
+        | "blocked"
+        | "sanitized_and_completed"
+        | "clean_completed" = "clean_completed";
 
       if (effectiveVerdict.decision === "block") {
         downstreamStatus = "blocked";
-        sanitizedEndUserOutput = `[REQUEST HALTED BY GUARDRAIL CONTROL PLANE]\nCategory: ${effectiveVerdict.category}\nReason: ${effectiveVerdict.reason}\nSpan: [${effectiveVerdict.span.start}, ${effectiveVerdict.span.end}]\n\nSanitized Input Preview:\n${sanitizedPrompt}`;
+        sanitizedEndUserOutput = `[REQUEST ENFORCED & HALTED BY GUARDRAIL CONTROL PLANE]\nCategory: ${effectiveVerdict.category}\nReason: ${effectiveVerdict.reason}\nSpan: [${effectiveVerdict.span.start}, ${effectiveVerdict.span.end}]\n\nSanitized Input Preview:\n${sanitizedPrompt}`;
+      } else if (effectiveVerdict.decision === "redact") {
+        downstreamStatus = "sanitized_and_completed";
+        sanitizedEndUserOutput = effectiveVerdict.redacted;
       } else {
-        const promptForDownstream =
-          effectiveVerdict.decision === "redact"
-            ? effectiveVerdict.redacted
-            : sanitizedPrompt;
-
-        if (
-          effectiveVerdict.decision === "redact" ||
-          detectingRuleReports.length > 0
-        ) {
-          downstreamStatus = "sanitized_and_completed";
-        }
-
-        const genAi = getGenClient();
-        const genResponse = await genAi.models.generateContent({
-          model: "gemini-4-hydrogen",
-          contents: promptForDownstream,
-          config: {
-            systemInstruction:
-              "You are a concise, security-hardened enterprise assistant. Never echo raw secrets, credentials, or PII. If the prompt contains [REDACTED:...] markers, acknowledge that the sensitive tokens were sanitized by the TypeSafe Guardrail layer and safely address the benign technical part of the user's request in 2-4 sentences.",
-          },
-        });
-
-        const rawModelText =
-          genResponse.text ?? "Request processed with sanitized input.";
-        // Sanitize model output before it ever reaches the end user!
-        const outputFindings = ALL_PURE_DETECTORS.flatMap((d) =>
-          d(rawModelText)
-        );
-        const outputVerdict = evaluatePrompt(
-          rawModelText,
-          DEFAULT_GUARDRAIL_POLICY
-        );
-        if (outputVerdict.decision === "redact") {
-          sanitizedEndUserOutput = outputVerdict.redacted;
-        } else {
-          sanitizedEndUserOutput = sanitizeWithFindings(
-            rawModelText,
-            outputFindings
-          );
-        }
+        sanitizedEndUserOutput = sanitizedPrompt;
       }
 
       const totalLatencyMs = Math.round(performance.now() - requestStart);
+      const usage = decisionResult.usage;
 
       res.json({
         contractVerdict,
@@ -396,32 +496,37 @@ async function startServer() {
         triggeredRules: ruleReports,
         entropyAnalysis,
         typesafeInternals: {
-          model: "gemini-decision-1",
-          apiVersion: "v1beta",
-          architecture: "Non-Regressive Calibrated Decision Model (System-1)",
-          totalOutputTokens:
-            (decisionResult.usage as { total_output_tokens?: number } | undefined)
-              ?.total_output_tokens ?? 0,
+          endpoint: endpointUsed,
+          httpStatus: statusCode,
+          requestedModel: "jev-latest",
+          model: decisionResult.model ?? "jev-latest",
+          architecture:
+            "TypeSafe System One (Jev Non-Regressive Decision Model)",
+          totalOutputTokens: usage?.total_output_tokens ?? 0,
           totalInputTokens:
-            (decisionResult.usage as { total_input_tokens?: number } | undefined)
-              ?.total_input_tokens ?? null,
+            usage?.prompt_tokens ??
+            usage?.input_tokens ??
+            usage?.total_tokens ??
+            usage?.total_input_tokens ??
+            null,
           decisionsLatencyMs,
           totalPipelineLatencyMs: totalLatencyMs,
           requestPayload: {
-            model: "gemini-decision-1",
-            inputPreview: sanitizedPrompt,
+            endpoint: endpointUsed,
+            model: "jev-latest",
+            statePreview: sanitizedPrompt,
             questionCount: Object.keys(questionsPayload).length,
             questions: questionsPayload,
           },
-          rawAnswers: answers,
+          rawAnswers: normalizedAnswers,
         },
       });
     } catch (err: unknown) {
       const message =
         err instanceof Error
           ? err.message
-          : "Unexpected error during guardrail evaluation.";
-      res.status(500).json({ error: message });
+          : "Unexpected error during TypeSafe guardrail evaluation.";
+      res.status(502).json({ error: message });
     }
   });
 
@@ -440,7 +545,9 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`TypeSafe Guardrail Studio running on http://localhost:${PORT}`);
+    console.log(
+      `TypeSafe Guardrail Studio running on http://localhost:${PORT}`
+    );
   });
 }
 

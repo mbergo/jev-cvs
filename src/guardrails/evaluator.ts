@@ -42,10 +42,14 @@ export function evaluatePrompt(
     return { decision: "allow" };
   }
 
-  // First check if any matched finding belongs to a category configured to "block"
-  const blockingFinding = rawFindings.find(
-    (f) => validPolicy.categories[f.category].action === "block"
-  );
+  // First check if any matched finding is configured to "block"
+  const blockingFinding = rawFindings.find((f) => {
+    const catCfg = validPolicy.categories[f.category];
+    if (catCfg.blockDetectors !== undefined) {
+      return catCfg.blockDetectors.includes(f.detector);
+    }
+    return catCfg.action === "block";
+  });
 
   if (blockingFinding) {
     const span = resolveFindingSpan(input, blockingFinding.detector);
@@ -57,9 +61,9 @@ export function evaluatePrompt(
     };
   }
 
-  // Otherwise, findings belong to categories configured to "redact"
+  // Otherwise, findings belong to detectors/categories configured to "redact" (Alert & Sanitize)
   const redactFindings = rawFindings.filter(
-    (f) => validPolicy.categories[f.category].action === "redact"
+    (f) => validPolicy.categories[f.category].action !== "allow"
   );
 
   if (redactFindings.length > 0) {

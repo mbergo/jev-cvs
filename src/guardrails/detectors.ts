@@ -44,7 +44,7 @@ const PRIVATE_KEY_HEADER_PATTERN =
   /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g;
 const JWT_SHAPE_PATTERN =
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
-const CANDIDATE_TOKEN_PATTERN = /[A-Za-z0-9+/=_-]{20,}/g;
+const CANDIDATE_TOKEN_PATTERN = /\S{20,}/g;
 
 export const detectAwsAccessKey: PureDetector = (input: string): Finding[] => {
   const findings: Finding[] = [];
@@ -105,7 +105,7 @@ export const detectHighEntropyString: PureDetector = (
 ): Finding[] => {
   const findings: Finding[] = [];
   for (const match of input.matchAll(CANDIDATE_TOKEN_PATTERN)) {
-    const token = match[0];
+    const token = match[0].replace(/^[("'`]+|[.,;!?)"'`]+$/g, "");
     if (token.length < 20) continue;
     // Exclude known benign shapes: UUIDs, hex git SHAs, URLs, paths
     if (UUID_REGEX.test(token)) continue;
@@ -115,13 +115,13 @@ export const detectHighEntropyString: PureDetector = (
     // Skip tokens already matched by specific high-confidence detectors
     if (/^(?:AKIA|ASIA)[0-9A-Z]{16}$/.test(token)) continue;
     if (/^gh[pousr]_/.test(token)) continue;
-    if (/^eyJ[A-Za-z0-9_-]{10,}$/.test(token)) continue;
+    if (/^eyJ[A-Za-z0-9_-]{10,}/.test(token)) continue;
     if (/^(?:sk_live_|sk_test_|rk_live_|xox[baprs]-|AIza)/.test(token)) continue;
 
     // Require mixed character classes (not purely alphabetic words/identifiers)
     const hasLower = /[a-z]/.test(token);
     const hasUpper = /[A-Z]/.test(token);
-    const hasDigitOrSymbol = /[0-9+/=_-]/.test(token);
+    const hasDigitOrSymbol = /[0-9+/=_!@#$%^&*-]/.test(token);
     if (!(hasDigitOrSymbol && (hasLower || hasUpper))) continue;
 
     const entropy = calculateShannonEntropy(token);
@@ -465,20 +465,21 @@ export function sanitizeWithFindings(
       CANDIDATE_TOKEN_PATTERN.source,
       CANDIDATE_TOKEN_PATTERN.flags
     );
-    sanitized = sanitized.replace(entropyRegex, (token) => {
+    sanitized = sanitized.replace(entropyRegex, (rawToken) => {
+      const token = rawToken.replace(/^[("'`]+|[.,;!?)"'`]+$/g, "");
       if (
         token.length >= 20 &&
         !UUID_REGEX.test(token) &&
         !GIT_SHA_HEX_REGEX.test(token) &&
         !URL_PREFIX_REGEX.test(token) &&
         !FILE_PATH_REGEX.test(token) &&
-        /[0-9+/=_-]/.test(token) &&
+        /[0-9+/=_!@#$%^&*-]/.test(token) &&
         /[A-Za-z]/.test(token) &&
         calculateShannonEntropy(token) >= 4.5
       ) {
         return `[REDACTED:${maskMatch(token)}]`;
       }
-      return token;
+      return rawToken;
     });
   }
 
