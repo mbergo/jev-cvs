@@ -25,10 +25,6 @@ export const TYPESAFE_THRESHOLDS = {
   noulReview: 0.35,
   /** severity score (0..3) at or above this turns any review into a block. */
   severityBlock: 2.0,
-  /** A noul answer whose confidence max(p, 1-p) is below this is re-asked before deciding. */
-  retryConfidence: 0.7,
-  /** Parallel re-asks of the rule alone; all must be confident and agree, else the rule fails closed. */
-  retries: 2,
 } as const;
 
 export type NoulBand = "pass" | "review" | "action";

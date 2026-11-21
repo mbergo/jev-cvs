@@ -162,41 +162,8 @@ interface TriggeredRuleReport {
     | "Enforced (Blocked)"
     | "Alerted & Sanitized"
     | "Flagged for Review"
-    | "Ignored (Bypassed)"
-    | "Guardrail Error (Failed Closed)";
-  /** Present when the first answer was uncertain and the rule was re-asked. */
-  retried?: { first: number; samples: number[] };
+    | "Ignored (Bypassed)";
 }
-
-/** One uncertain rule re-asked: the first (battery) noul and one sample per retry. */
-interface RetryReport {
-  ruleId: string;
-  ruleName: string;
-  first: number;
-  samples: number[];
-  resolved: boolean;
-}
-
-/** A rule whose retries did not all come back confident and in agreement → fail closed. */
-interface GuardrailErrorReport {
-  ruleId: string;
-  ruleName: string;
-  category: GuardrailCategory;
-  first: number;
-  samples: number[];
-}
-
-type JevAnswers = NonNullable<TypeSafeSystemOneResponse["answers"]>;
-
-/**
- * The question sent on retry `attempt` (0-based). Identical to the battery question for now;
- * this is the one place to swap in a different example reference per attempt later.
- */
-function retryQuestion(question: unknown, _attempt: number): unknown {
-  return question;
-}
-
-const fmtNoul = (p: number) => (Number.isFinite(p) ? p.toFixed(2) : "error");
 
 async function startServer() {
   const app = express();
@@ -360,74 +327,6 @@ async function startServer() {
         }
       }
 
-      // Retry band: a noul answer with confidence max(p, 1-p) below retryConfidence
-      // (0.3 < noul < 0.7) is not decided from one sample. The uncertain rules are re-asked
-      // `retries` times in parallel — one request per attempt, carrying only those questions —
-      // and a rule stands only if every retry is confident and on the same side. Anything
-      // else is a guardrail error and the whole request fails closed (block).
-      const retryStart = performance.now();
-      const isConfident = (p: number) =>
-        Number.isFinite(p) &&
-        Math.max(p, 1 - p) >= TYPESAFE_THRESHOLDS.retryConfidence;
-      const uncertainRules = activeRules.filter((rule) => {
-        const a = normalizedAnswers[rule.id] as
-          | { type?: string; noul?: number }
-          | undefined;
-        return (
-          a?.type === "noul" && typeof a.noul === "number" && !isConfident(a.noul)
-        );
-      });
-      const retryReports: RetryReport[] = [];
-      const guardrailErrors: GuardrailErrorReport[] = [];
-      if (uncertainRules.length > 0) {
-        const attempts: JevAnswers[] = await Promise.all(
-          Array.from({ length: TYPESAFE_THRESHOLDS.retries }, async (_, attempt) => {
-            const questions: Record<string, unknown> = {};
-            for (const rule of uncertainRules) {
-              questions[rule.id] = retryQuestion(questionsPayload[rule.id], attempt);
-            }
-            try {
-              const { data } = await callTypeSafeSystemOne(typesafeState, questions);
-              return data.answers ?? {};
-            } catch {
-              return {}; // a failed retry counts as "could not decide"
-            }
-          })
-        );
-        for (const rule of uncertainRules) {
-          const first = (normalizedAnswers[rule.id] as { noul: number }).noul;
-          const samples = attempts.map((answers) => {
-            const a = answers[rule.id];
-            return a && a.type === "noul" && typeof a.noul === "number"
-              ? Number(a.noul.toFixed(4))
-              : NaN;
-          });
-          const resolved =
-            samples.every(isConfident) &&
-            samples.every((p) => (p >= 0.5) === (samples[0] >= 0.5));
-          retryReports.push({ ruleId: rule.id, ruleName: rule.name, first, samples, resolved });
-          if (resolved) {
-            const mean = samples.reduce((s, p) => s + p, 0) / samples.length;
-            normalizedAnswers[rule.id] = {
-              type: "noul",
-              noul: Number(mean.toFixed(4)),
-              confidence: Math.max(mean, 1 - mean),
-              retried: { first, samples },
-            };
-          } else {
-            guardrailErrors.push({
-              ruleId: rule.id,
-              ruleName: rule.name,
-              category: rule.category,
-              first,
-              samples,
-            });
-          }
-        }
-      }
-      const retryLatencyMs =
-        uncertainRules.length > 0 ? Math.round(performance.now() - retryStart) : 0;
-
       // Severity score drives escalation of review-band rules (cookbook: score >= 2.0 → block).
       const severityAnswer = normalizedAnswers[SHARED_QUESTION_IDS.severity] as
         | { type: "score"; score: number }
@@ -443,29 +342,8 @@ async function startServer() {
       // Decision logic is code; Jev only answers yes/no per rule.
       const ruleReports: TriggeredRuleReport[] = [];
       for (const rule of activeRules) {
-        const guardrailError = guardrailErrors.find((g) => g.ruleId === rule.id);
-        if (guardrailError) {
-          // Fail closed: the rule could not be decided, so it is enforced regardless of mode.
-          ruleReports.push({
-            ruleId: rule.id,
-            ruleName: rule.name,
-            category: rule.category,
-            mode: rule.mode,
-            deterministicMatched: false,
-            maskedMatches: [],
-            typesafeNoulProbability: Number(guardrailError.first.toFixed(4)),
-            typesafeConfidence: Number(
-              Math.max(guardrailError.first, 1 - guardrailError.first).toFixed(4)
-            ),
-            band: "action",
-            escalatedBySeverity: false,
-            actionTaken: "Guardrail Error (Failed Closed)",
-            retried: { first: guardrailError.first, samples: guardrailError.samples },
-          });
-          continue;
-        }
         const ans = normalizedAnswers[rule.id] as
-          | { type: "noul"; noul: number; confidence: number; retried?: { first: number; samples: number[] } }
+          | { type: "noul"; noul: number; confidence: number }
           | undefined;
         const noulProb =
           ans && ans.type === "noul" ? Number(ans.noul.toFixed(4)) : null;
@@ -503,7 +381,6 @@ async function startServer() {
           band,
           escalatedBySeverity,
           actionTaken,
-          retried: ans?.retried,
         });
       }
 
@@ -519,17 +396,8 @@ async function startServer() {
           r.actionTaken === "Flagged for Review"
       );
 
-      // Precedence: guardrail error (fail closed) > block > detect > allow.
-      if (guardrailErrors.length > 0) {
-        const g = guardrailErrors[0];
-        const others = guardrailErrors.length - 1;
-        effectiveVerdict = {
-          decision: "block",
-          category: g.category,
-          reason: `Guardrail error on rule "${g.ruleName}": Jev answered ${fmtNoul(g.first)} in the battery and ${g.samples.map(fmtNoul).join(" / ")} on ${TYPESAFE_THRESHOLDS.retries} retries — no confident, agreeing answer, failed closed${others > 0 ? ` (+${others} more rule${others > 1 ? "s" : ""})` : ""}`,
-          span: { start: 0, end: rawPrompt.length },
-        };
-      } else if (blockingRuleReport) {
+      // Precedence: block > detect > allow.
+      if (blockingRuleReport) {
         effectiveVerdict = {
           decision: "block",
           category: blockingRuleReport.category,
@@ -581,7 +449,6 @@ async function startServer() {
         sanitizedEndUserOutput,
         downstreamStatus,
         triggeredRules: ruleReports,
-        guardrailErrors,
         entropyAnalysis,
         typesafeInternals: {
           endpoint: endpointUsed,
@@ -597,13 +464,6 @@ async function startServer() {
           totalOutputTokens: usage?.output_tokens ?? 0,
           totalInputTokens: usage?.input_tokens ?? null,
           decisionsLatencyMs,
-          retryLatencyMs,
-          retries: retryReports,
-          retryPolicy: {
-            confidence: TYPESAFE_THRESHOLDS.retryConfidence,
-            attempts: TYPESAFE_THRESHOLDS.retries,
-            onDisagreement: "fail closed",
-          },
           totalPipelineLatencyMs: totalLatencyMs,
           requestPayload: {
             endpoint: endpointUsed,

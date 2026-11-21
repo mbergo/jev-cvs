@@ -13,7 +13,7 @@ export interface InsideTriggeredRule {
   typesafeNoulProbability: number | null;
   band: Band;
   escalatedBySeverity: boolean;
-  actionTaken: "Enforced (Blocked)" | "Alerted & Sanitized" | "Flagged for Review" | "Ignored (Bypassed)" | "Guardrail Error (Failed Closed)";
+  actionTaken: "Enforced (Blocked)" | "Alerted & Sanitized" | "Flagged for Review" | "Ignored (Bypassed)";
 }
 
 export interface InsideResult {
@@ -83,7 +83,6 @@ const ACTION_LABEL = {
   "Alerted & Sanitized": "request flagged",
   "Flagged for Review": "referred for review",
   "Ignored (Bypassed)": "ignored",
-  "Guardrail Error (Failed Closed)": "could not decide — failed closed",
 } as const;
 
 // The four stages appear in order, so the sequence of the pipeline is visible.
@@ -350,7 +349,7 @@ ${guardrailAnswers.slice(0, 3).map((g) => `    "${g.id}": { "type": "noul", "nou
                 <span className="text-neutral-600">→</span>
                 <span className="text-neutral-400">{MODE_LABEL[t.mode]} mode</span>
                 <span className="text-neutral-600">→</span>
-                <span className={t.actionTaken === "Enforced (Blocked)" || t.actionTaken === "Guardrail Error (Failed Closed)" ? "text-rose-300" : t.actionTaken === "Flagged for Review" ? "text-sky-300" : "text-amber-300"}>
+                <span className={t.actionTaken === "Enforced (Blocked)" ? "text-rose-300" : t.actionTaken === "Flagged for Review" ? "text-sky-300" : "text-amber-300"}>
                   {ACTION_LABEL[t.actionTaken]}
                 </span>
               </div>

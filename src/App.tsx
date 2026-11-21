@@ -39,10 +39,7 @@ interface TriggeredRule {
     | "Enforced (Blocked)"
     | "Alerted & Sanitized"
     | "Flagged for Review"
-    | "Ignored (Bypassed)"
-    | "Guardrail Error (Failed Closed)";
-  /** Present when the first answer was uncertain and the rule was re-asked. NaN samples arrive as null. */
-  retried?: { first: number; samples: (number | null)[] };
+    | "Ignored (Bypassed)";
 }
 
 interface NoulAnswer { type: "noul"; noul: number }
@@ -56,7 +53,6 @@ interface EvalResult {
     | { decision: "block"; category: string; reason: string }
     | { decision: "redact"; category: string };
   triggeredRules: TriggeredRule[];
-  guardrailErrors?: { ruleId: string; ruleName: string; first: number; samples: (number | null)[] }[];
   typesafeInternals: {
     endpoint: string;
     httpStatus?: number;
@@ -66,8 +62,6 @@ interface EvalResult {
     totalInputTokens: number | null;
     totalOutputTokens: number;
     decisionsLatencyMs: number;
-    retryLatencyMs?: number;
-    retries?: { ruleId: string; ruleName: string; first: number; samples: (number | null)[]; resolved: boolean }[];
     totalPipelineLatencyMs?: number;
     requestPayload: { state: unknown; questions: Record<string, unknown> };
     rawAnswers: Record<string, Answer>;
@@ -75,9 +69,6 @@ interface EvalResult {
 }
 
 const GROUPS: RuleGroup[] = ["PII", "Credentials & Secrets", "Confidential Data", "Injection & Execution", "Harmful Content"];
-
-const GUARDRAIL_ERROR: TriggeredRule["actionTaken"] = "Guardrail Error (Failed Closed)";
-const fmtP = (p: number | null | undefined) => (typeof p === "number" && Number.isFinite(p) ? p.toFixed(2) : "error");
 
 const VERDICT_LABEL: Record<EvalResult["effectiveVerdict"]["decision"], string> = {
   allow: "ALLOW",
@@ -339,9 +330,7 @@ export default function App() {
                   <div>
                     <div className="text-3xl font-bold tracking-tight">{VERDICT_LABEL[verdict!]}</div>
                     <div className="text-sm text-neutral-300">
-                      {verdict === "block" && (result.guardrailErrors?.length
-                        ? `Failed closed — guardrail error on "${result.guardrailErrors[0].ruleName}": Jev answered ${fmtP(result.guardrailErrors[0].first)} in the battery and ${result.guardrailErrors[0].samples.map(fmtP).join(" / ")} on retry — no confident, agreeing answer. Not forwarded to the LLM.`
-                        : "Request halted — not forwarded to the LLM.")}
+                      {verdict === "block" && "Request halted — not forwarded to the LLM."}
                       {verdict === "redact" && "Forwarded with notice — rules in Alert mode fired."}
                       {verdict === "allow" && "Clean — forwarded to the LLM."}
                     </div>
@@ -350,16 +339,13 @@ export default function App() {
                 <div className="text-right text-[13px] font-mono text-neutral-400">
                   <div>{result.typesafeInternals.model}</div>
                   <div>{result.typesafeInternals.decisionsLatencyMs} ms for {Object.keys(result.typesafeInternals.requestPayload.questions).length} questions</div>
-                  {(result.typesafeInternals.retryLatencyMs ?? 0) > 0 && (
-                    <div className="text-amber-300">+{result.typesafeInternals.retryLatencyMs} ms · {result.typesafeInternals.retries?.length} uncertain rule{(result.typesafeInternals.retries?.length ?? 0) === 1 ? "" : "s"} re-asked ×2</div>
-                  )}
                 </div>
               </div>
               {result.triggeredRules.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {result.triggeredRules.map((t) => (
-                    <span key={t.ruleId} className={`text-[13px] font-mono px-2 py-0.5 rounded border ${t.actionTaken === GUARDRAIL_ERROR ? "border-rose-500 bg-rose-900/40 text-rose-200" : t.actionTaken === "Enforced (Blocked)" ? "border-rose-700 text-rose-300" : t.actionTaken === "Flagged for Review" ? "border-sky-700 text-sky-300" : "border-amber-700 text-amber-300"}`}>
-                      {t.actionTaken === GUARDRAIL_ERROR ? "ERROR " : ""}{t.ruleName} {t.retried ? `${fmtP(t.retried.first)} ↻ ${t.retried.samples.map(fmtP).join("/")}` : t.typesafeNoulProbability?.toFixed(2)}{t.escalatedBySeverity ? " ↑sev" : ""}
+                    <span key={t.ruleId} className={`text-[13px] font-mono px-2 py-0.5 rounded border ${t.actionTaken === "Enforced (Blocked)" ? "border-rose-700 text-rose-300" : t.actionTaken === "Flagged for Review" ? "border-sky-700 text-sky-300" : "border-amber-700 text-amber-300"}`}>
+                      {t.ruleName} {t.typesafeNoulProbability?.toFixed(2)}{t.escalatedBySeverity ? " ↑sev" : ""}
                     </span>
                   ))}
                 </div>
@@ -575,12 +561,11 @@ export default function App() {
                   const hit = result?.triggeredRules.find((t) => t.ruleId === rule.id);
                   const p = rule.mode === "Ignore" ? null : noulOf(rule.id);
                   return (
-                    <div key={rule.id} className={`px-4 py-2 flex items-center gap-3 border-b border-neutral-800/50 ${hit ? (hit.actionTaken === GUARDRAIL_ERROR ? "bg-rose-950/40" : hit.actionTaken === "Enforced (Blocked)" ? "bg-rose-950/25" : hit.actionTaken === "Flagged for Review" ? "bg-sky-950/20" : "bg-amber-950/20") : ""}`}>
+                    <div key={rule.id} className={`px-4 py-2 flex items-center gap-3 border-b border-neutral-800/50 ${hit ? (hit.actionTaken === "Enforced (Blocked)" ? "bg-rose-950/25" : hit.actionTaken === "Flagged for Review" ? "bg-sky-950/20" : "bg-amber-950/20") : ""}`}>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className={`text-base font-medium truncate ${rule.mode === "Ignore" ? "text-neutral-500" : ""}`}>{rule.name}</span>
-                          {hit && <span className={`text-xs font-mono px-1.5 py-0.5 rounded ${hit.actionTaken === GUARDRAIL_ERROR ? "bg-rose-600/50 text-rose-100" : hit.actionTaken === "Enforced (Blocked)" ? "bg-rose-600/30 text-rose-300" : hit.actionTaken === "Flagged for Review" ? "bg-sky-600/30 text-sky-300" : "bg-amber-600/30 text-amber-300"}`}>{hit.actionTaken === GUARDRAIL_ERROR ? "ERROR · failed closed" : hit.actionTaken === "Enforced (Blocked)" ? "BLOCKED" : hit.actionTaken === "Flagged for Review" ? "REVIEW" : "ALERT"}{hit.escalatedBySeverity ? " ↑sev" : ""}</span>}
-                          {hit?.retried && hit.actionTaken !== GUARDRAIL_ERROR && <span className="text-xs font-mono text-neutral-500" title="re-asked: battery ↻ retries">{fmtP(hit.retried.first)} ↻ {hit.retried.samples.map(fmtP).join("/")}</span>}
+                          {hit && <span className={`text-xs font-mono px-1.5 py-0.5 rounded ${hit.actionTaken === "Enforced (Blocked)" ? "bg-rose-600/30 text-rose-300" : hit.actionTaken === "Flagged for Review" ? "bg-sky-600/30 text-sky-300" : "bg-amber-600/30 text-amber-300"}`}>{hit.actionTaken === "Enforced (Blocked)" ? "BLOCKED" : hit.actionTaken === "Flagged for Review" ? "REVIEW" : "ALERT"}{hit.escalatedBySeverity ? " ↑sev" : ""}</span>}
                         </div>
                         <p className="text-[13px] text-neutral-500 truncate" title={rule.typesafeQuestion.instructions}>{rule.typesafeQuestion.instructions}</p>
                       </div>
