@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
@@ -25,12 +26,22 @@ import {
   INITIAL_CONTROL_PLANE_RULES,
 } from "./src/data/controlPlaneRules";
 import { GUARDRAIL_TEST_FIXTURES } from "./src/guardrails/evaluator.test";
+import {
+  bandForNoul,
+  buildTypeSafeQuestions,
+  buildTypeSafeState,
+  type NoulBand,
+  SHARED_QUESTION_IDS,
+  TYPESAFE_THRESHOLDS,
+} from "./src/guardrails/typesafe";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT ?? 3000);
 const TYPESAFE_API_BASE = "https://api.typesafe.ai/v1";
+const TYPESAFE_MODEL = process.env.TYPESAFE_MODEL?.trim() || "jev-latest";
+
 
 interface TypeSafeSystemOneResponse {
   model?: string;
@@ -38,8 +49,7 @@ interface TypeSafeSystemOneResponse {
     string,
     | {
         type: "noul";
-        noul: number;
-        confidence?: number;
+        noul: number; // P(yes) in [0,1]; no separate confidence field per docs
       }
     | {
         type: "choice";
@@ -56,19 +66,27 @@ interface TypeSafeSystemOneResponse {
       }
   >;
   usage?: {
-    prompt_tokens?: number;
     input_tokens?: number;
-    total_tokens?: number;
-    total_input_tokens?: number;
-    total_output_tokens?: number;
+    output_tokens?: number;
   };
-  error?:
-    | {
-        message?: string;
-        type?: string;
-        code?: string;
-      }
-    | string;
+  // 400 -> detail: string | object ; 422 -> detail: [{loc,msg,type}]
+  detail?: unknown;
+}
+
+function formatTypeSafeError(parsed: TypeSafeSystemOneResponse, rawText: string): string {
+  const d = parsed.detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) {
+    return d
+      .map((e) =>
+        e && typeof e === "object" && "msg" in e
+          ? `${Array.isArray((e as { loc?: unknown }).loc) ? ((e as { loc: unknown[] }).loc as unknown[]).join(".") + ": " : ""}${(e as { msg: string }).msg}`
+          : JSON.stringify(e)
+      )
+      .join("; ");
+  }
+  if (d && typeof d === "object") return JSON.stringify(d);
+  return rawText.slice(0, 240);
 }
 
 /**
@@ -76,7 +94,7 @@ interface TypeSafeSystemOneResponse {
  * Zero fallback: if TYPESAFE_API_KEY is missing or the API returns an error, it throws immediately.
  */
 async function callTypeSafeSystemOne(
-  stateText: string,
+  state: unknown,
   questions: Record<string, unknown>
 ): Promise<{
   data: TypeSafeSystemOneResponse;
@@ -98,8 +116,8 @@ async function callTypeSafeSystemOne(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "jev-latest",
-      state: stateText,
+      model: TYPESAFE_MODEL,
+      state,
       questions,
     }),
   });
@@ -115,12 +133,8 @@ async function callTypeSafeSystemOne(
   }
 
   if (!response.ok) {
-    const errDetail =
-      typeof parsed.error === "string"
-        ? parsed.error
-        : parsed.error?.message ?? rawText.slice(0, 240);
     throw new Error(
-      `TypeSafe API HTTP ${response.status} (${endpoint}): ${errDetail}`
+      `TypeSafe API HTTP ${response.status} (${endpoint}): ${formatTypeSafeError(parsed, rawText)}`
     );
   }
 
@@ -140,11 +154,49 @@ interface TriggeredRuleReport {
   maskedMatches: string[];
   typesafeNoulProbability: number | null;
   typesafeConfidence: number | null;
+  /** pass | review | action, from the noul thresholds in src/guardrails/typesafe.ts */
+  band: NoulBand;
+  /** true when a review-band rule was escalated by the severity score. */
+  escalatedBySeverity: boolean;
   actionTaken:
     | "Enforced (Blocked)"
     | "Alerted & Sanitized"
-    | "Ignored (Bypassed)";
+    | "Flagged for Review"
+    | "Ignored (Bypassed)"
+    | "Guardrail Error (Failed Closed)";
+  /** Present when the first answer was uncertain and the rule was re-asked. */
+  retried?: { first: number; samples: number[] };
 }
+
+/** One uncertain rule re-asked: the first (battery) noul and one sample per retry. */
+interface RetryReport {
+  ruleId: string;
+  ruleName: string;
+  first: number;
+  samples: number[];
+  resolved: boolean;
+}
+
+/** A rule whose retries did not all come back confident and in agreement → fail closed. */
+interface GuardrailErrorReport {
+  ruleId: string;
+  ruleName: string;
+  category: GuardrailCategory;
+  first: number;
+  samples: number[];
+}
+
+type JevAnswers = NonNullable<TypeSafeSystemOneResponse["answers"]>;
+
+/**
+ * The question sent on retry `attempt` (0-based). Identical to the battery question for now;
+ * this is the one place to swap in a different example reference per attempt later.
+ */
+function retryQuestion(question: unknown, _attempt: number): unknown {
+  return question;
+}
+
+const fmtNoul = (p: number) => (Number.isFinite(p) ? p.toFixed(2) : "error");
 
 async function startServer() {
   const app = express();
@@ -157,7 +209,7 @@ async function startServer() {
       res.status(401).json({
         connected: false,
         endpoint: `${TYPESAFE_API_BASE}/systemone`,
-        model: "jev-latest",
+        model: TYPESAFE_MODEL,
         error: "TYPESAFE_API_KEY is not set in environment.",
       });
       return;
@@ -175,7 +227,7 @@ async function startServer() {
         res.status(modelsResp.status).json({
           connected: false,
           endpoint: `${TYPESAFE_API_BASE}/systemone`,
-          model: "jev-latest",
+          model: TYPESAFE_MODEL,
           error: `GET /v1/models returned HTTP ${modelsResp.status}: ${rawBody.slice(0, 200)}`,
         });
         return;
@@ -191,14 +243,14 @@ async function startServer() {
       res.json({
         connected: true,
         endpoint: `${TYPESAFE_API_BASE}/systemone`,
-        model: "jev-latest",
+        model: TYPESAFE_MODEL,
         modelsData,
       });
     } catch (err: unknown) {
       res.status(502).json({
         connected: false,
         endpoint: `${TYPESAFE_API_BASE}/systemone`,
-        model: "jev-latest",
+        model: TYPESAFE_MODEL,
         error:
           err instanceof Error
             ? err.message
@@ -270,100 +322,24 @@ async function startServer() {
         ? req.body.rules
         : INITIAL_CONTROL_PLANE_RULES;
 
-      // 1. Build & validate strict GuardrailPolicy via Zod
+      // Policy compiled only for display in the UI (the model is the guardrail; no regex
+      // takes part in the decision below).
       const compiledPolicy = buildGuardrailPolicyFromControlPlane(rules);
+      const entropyAnalysis: never[] = [];
 
-      // 2. Run pure deterministic detectors to inspect masked findings
-      const allDetectorFindings: Finding[] = [];
-      for (const detector of ALL_PURE_DETECTORS) {
-        const found = detector(rawPrompt);
-        allDetectorFindings.push(...found);
-      }
-
-      // Compute token entropy telemetry for the TypeSafe internals panel
-      const candidateTokens: string[] = rawPrompt.match(/\S{12,}/g) ?? [];
-      const entropyAnalysis = candidateTokens.slice(0, 6).map((rawTok: string) => {
-        const tok = rawTok.replace(/^[("'`]+|[.,;!?)"'`]+$/g, "");
-        return {
-          maskedToken: maskMatch(tok),
-          length: tok.length,
-          shannonEntropy: Number(calculateShannonEntropy(tok).toFixed(2)),
-          exceedsThreshold:
-            tok.length >= 20 && calculateShannonEntropy(tok) >= 4.5,
-        };
-      });
-
-      // 3. Run the strict contract function: evaluatePrompt(input, policy)
-      const contractVerdict: GuardrailVerdict = evaluatePrompt(
-        rawPrompt,
-        compiledPolicy
-      );
-
-      // 4. Build TypeSafe System One (`POST https://api.typesafe.ai/v1/systemone`) request
+      // Build TypeSafe System One (`POST https://api.typesafe.ai/v1/systemone`) request.
+      // State is nested JSON; questions + thresholds live in src/guardrails/typesafe.ts.
       const activeRules = rules.filter((r) => r.mode !== "Ignore");
+      const typesafeState = buildTypeSafeState(rawPrompt, activeRules);
+      const questionsPayload = buildTypeSafeQuestions(activeRules);
 
-      const questionsPayload: Record<string, unknown> = {};
-      for (const rule of activeRules) {
-        questionsPayload[rule.id] = {
-          type: "noul",
-          instructions: rule.customPatternDescription
-            ? `${rule.typesafeQuestion.instructions} Custom policy scope: ${rule.customPatternDescription}`
-            : rule.typesafeQuestion.instructions,
-          criteria: {
-            true_description: rule.typesafeQuestion.trueDescription,
-            false_description: rule.typesafeQuestion.falseDescription,
-          },
-        };
-      }
-
-      questionsPayload["primary_threat_vector"] = {
-        type: "choice",
-        instructions:
-          "Which primary security guardrail category best describes the dominant risk in this input?",
-        criteria: {
-          benign_input: "Safe, harmless, or standard technical request.",
-          credential_or_secret_leak:
-            "Contains API keys, cloud tokens, PEM private keys, JWTs, or high-entropy secrets.",
-          pii_disclosure:
-            "Contains SSN, credit card, bank account, passport, EIN, or TIN numbers.",
-          prompt_injection_or_exploit:
-            "Contains prompt injection, jailbreak, RCE, system file access, exfiltration, or malicious URLs/packages.",
-        },
-      };
-
-      const severityCriteria = [
-        "Level 0 (Safe): Benign request with zero policy violations.",
-        "Level 1 (Low): Minor ambiguity or benign technical discussion of security concepts.",
-        "Level 2 (High): Contains sensitive PII or unmasked credentials requiring redaction.",
-        "Level 3 (Critical): Active exploit payload, jailbreak override, destructive command, or RCE.",
-      ];
-
-      questionsPayload["threat_severity_rubric"] = {
-        type: "score",
-        instructions:
-          "Rate the security risk severity of ingesting this prompt into a production LLM pipeline.",
-        criteria: severityCriteria,
-      };
-
-      const allActiveFindings = allDetectorFindings.filter((f) => {
-        const matchingRule = rules.find(
-          (r) =>
-            r.detectorKey === f.detector ||
-            (r.id === "api_keys_and_secrets" &&
-              (f.category === "credential_leak" || f.category === "secret_key"))
-        );
-        return !matchingRule || matchingRule.mode !== "Ignore";
-      });
-
-      const sanitizedPrompt = sanitizeWithFindings(
-        rawPrompt,
-        allActiveFindings.length > 0 ? allActiveFindings : allDetectorFindings
-      );
+      // Nothing is rewritten: the gateway either forwards the prompt or halts it.
+      const sanitizedPrompt = rawPrompt;
 
       // Call the live TypeSafe System One API directly (throws on error, no fallback)
       const decisionsStart = performance.now();
       const { data: decisionResult, endpointUsed, statusCode } =
-        await callTypeSafeSystemOne(rawPrompt, questionsPayload);
+        await callTypeSafeSystemOne(typesafeState, questionsPayload);
       const decisionsLatencyMs = Math.round(performance.now() - decisionsStart);
 
       const rawAnswers = decisionResult.answers ?? {};
@@ -371,10 +347,9 @@ async function startServer() {
       for (const [k, val] of Object.entries(rawAnswers)) {
         if (val && val.type === "noul") {
           const noulVal = typeof val.noul === "number" ? val.noul : 0;
-          const confVal =
-            typeof val.confidence === "number"
-              ? val.confidence
-              : Math.max(noulVal, 1 - noulVal);
+          // Noul has no confidence field; the value fully describes the yes/no distribution.
+          // Derived "confidence" = distance from 0.5, expressed as max(p, 1-p) for the UI.
+          const confVal = Math.max(noulVal, 1 - noulVal);
           normalizedAnswers[k] = {
             type: "noul",
             noul: noulVal,
@@ -385,76 +360,188 @@ async function startServer() {
         }
       }
 
-      // 5. Evaluate per-rule triggers from TypeSafe `noul` probabilities + deterministic contract
-      const ruleReports: TriggeredRuleReport[] = [];
-      for (const rule of rules) {
-        const matchedFindings = allDetectorFindings.filter((f) => {
-          if (rule.id === "api_keys_and_secrets") {
-            return (
-              f.category === "credential_leak" || f.category === "secret_key"
-            );
+      // Retry band: a noul answer with confidence max(p, 1-p) below retryConfidence
+      // (0.3 < noul < 0.7) is not decided from one sample. The uncertain rules are re-asked
+      // `retries` times in parallel — one request per attempt, carrying only those questions —
+      // and a rule stands only if every retry is confident and on the same side. Anything
+      // else is a guardrail error and the whole request fails closed (block).
+      const retryStart = performance.now();
+      const isConfident = (p: number) =>
+        Number.isFinite(p) &&
+        Math.max(p, 1 - p) >= TYPESAFE_THRESHOLDS.retryConfidence;
+      const uncertainRules = activeRules.filter((rule) => {
+        const a = normalizedAnswers[rule.id] as
+          | { type?: string; noul?: number }
+          | undefined;
+        return (
+          a?.type === "noul" && typeof a.noul === "number" && !isConfident(a.noul)
+        );
+      });
+      const retryReports: RetryReport[] = [];
+      const guardrailErrors: GuardrailErrorReport[] = [];
+      if (uncertainRules.length > 0) {
+        const attempts: JevAnswers[] = await Promise.all(
+          Array.from({ length: TYPESAFE_THRESHOLDS.retries }, async (_, attempt) => {
+            const questions: Record<string, unknown> = {};
+            for (const rule of uncertainRules) {
+              questions[rule.id] = retryQuestion(questionsPayload[rule.id], attempt);
+            }
+            try {
+              const { data } = await callTypeSafeSystemOne(typesafeState, questions);
+              return data.answers ?? {};
+            } catch {
+              return {}; // a failed retry counts as "could not decide"
+            }
+          })
+        );
+        for (const rule of uncertainRules) {
+          const first = (normalizedAnswers[rule.id] as { noul: number }).noul;
+          const samples = attempts.map((answers) => {
+            const a = answers[rule.id];
+            return a && a.type === "noul" && typeof a.noul === "number"
+              ? Number(a.noul.toFixed(4))
+              : NaN;
+          });
+          const resolved =
+            samples.every(isConfident) &&
+            samples.every((p) => (p >= 0.5) === (samples[0] >= 0.5));
+          retryReports.push({ ruleId: rule.id, ruleName: rule.name, first, samples, resolved });
+          if (resolved) {
+            const mean = samples.reduce((s, p) => s + p, 0) / samples.length;
+            normalizedAnswers[rule.id] = {
+              type: "noul",
+              noul: Number(mean.toFixed(4)),
+              confidence: Math.max(mean, 1 - mean),
+              retried: { first, samples },
+            };
+          } else {
+            guardrailErrors.push({
+              ruleId: rule.id,
+              ruleName: rule.name,
+              category: rule.category,
+              first,
+              samples,
+            });
           }
-          return f.detector === rule.detectorKey;
-        });
+        }
+      }
+      const retryLatencyMs =
+        uncertainRules.length > 0 ? Math.round(performance.now() - retryStart) : 0;
 
+      // Severity score drives escalation of review-band rules (cookbook: score >= 2.0 → block).
+      const severityAnswer = normalizedAnswers[SHARED_QUESTION_IDS.severity] as
+        | { type: "score"; score: number }
+        | undefined;
+      const severityScore =
+        severityAnswer && typeof severityAnswer.score === "number"
+          ? severityAnswer.score
+          : 0;
+      const severityEscalates =
+        severityScore >= TYPESAFE_THRESHOLDS.severityBlock;
+
+      // Evaluate per-rule triggers from the Jev noul bands only.
+      // Decision logic is code; Jev only answers yes/no per rule.
+      const ruleReports: TriggeredRuleReport[] = [];
+      for (const rule of activeRules) {
+        const guardrailError = guardrailErrors.find((g) => g.ruleId === rule.id);
+        if (guardrailError) {
+          // Fail closed: the rule could not be decided, so it is enforced regardless of mode.
+          ruleReports.push({
+            ruleId: rule.id,
+            ruleName: rule.name,
+            category: rule.category,
+            mode: rule.mode,
+            deterministicMatched: false,
+            maskedMatches: [],
+            typesafeNoulProbability: Number(guardrailError.first.toFixed(4)),
+            typesafeConfidence: Number(
+              Math.max(guardrailError.first, 1 - guardrailError.first).toFixed(4)
+            ),
+            band: "action",
+            escalatedBySeverity: false,
+            actionTaken: "Guardrail Error (Failed Closed)",
+            retried: { first: guardrailError.first, samples: guardrailError.samples },
+          });
+          continue;
+        }
         const ans = normalizedAnswers[rule.id] as
-          | { type: "noul"; noul: number; confidence: number }
+          | { type: "noul"; noul: number; confidence: number; retried?: { first: number; samples: number[] } }
           | undefined;
         const noulProb =
           ans && ans.type === "noul" ? Number(ans.noul.toFixed(4)) : null;
         const noulConf =
           ans && ans.type === "noul" ? Number(ans.confidence.toFixed(4)) : null;
 
-        const deterministicMatched = matchedFindings.length > 0;
-        const modelTriggered = noulProb !== null && noulProb >= 0.65;
-
-        if (deterministicMatched || modelTriggered) {
-          let actionTaken: TriggeredRuleReport["actionTaken"] =
-            "Alerted & Sanitized";
-          if (rule.mode === "Block") {
-            actionTaken = "Enforced (Blocked)";
-          } else if (rule.mode === "Ignore") {
-            actionTaken = "Ignored (Bypassed)";
-          }
-
-          ruleReports.push({
-            ruleId: rule.id,
-            ruleName: rule.name,
-            category: rule.category,
-            mode: rule.mode,
-            deterministicMatched,
-            maskedMatches: matchedFindings.map((f) => f.match),
-            typesafeNoulProbability: noulProb,
-            typesafeConfidence: noulConf,
-            actionTaken,
-          });
+        const deterministicMatched = false;
+        let band = bandForNoul(noulProb);
+        let escalatedBySeverity = false;
+        if (band === "review" && severityEscalates) {
+          band = "action";
+          escalatedBySeverity = true;
         }
+
+        if (band === "pass") continue;
+
+        let actionTaken: TriggeredRuleReport["actionTaken"];
+        if (band === "review") {
+          actionTaken = "Flagged for Review";
+        } else if (rule.mode === "Block") {
+          actionTaken = "Enforced (Blocked)";
+        } else {
+          actionTaken = "Alerted & Sanitized";
+        }
+
+        ruleReports.push({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          category: rule.category,
+          mode: rule.mode,
+          deterministicMatched,
+          maskedMatches: [],
+          typesafeNoulProbability: noulProb,
+          typesafeConfidence: noulConf,
+          band,
+          escalatedBySeverity,
+          actionTaken,
+          retried: ans?.retried,
+        });
       }
 
-      // Reconcile the effective verdict from TypeSafe Jev & deterministic contract
-      let effectiveVerdict: GuardrailVerdict = contractVerdict;
-      const blockingRuleReport = ruleReports.find((r) => r.mode === "Block");
+      // Verdict comes from Jev alone.
+      let effectiveVerdict: GuardrailVerdict = { decision: "allow" };
+      const contractVerdict: GuardrailVerdict = effectiveVerdict;
+      const blockingRuleReport = ruleReports.find(
+        (r) => r.actionTaken === "Enforced (Blocked)"
+      );
       const detectingRuleReports = ruleReports.filter(
-        (r) => r.mode === "Detect"
+        (r) =>
+          r.actionTaken === "Alerted & Sanitized" ||
+          r.actionTaken === "Flagged for Review"
       );
 
-      if (effectiveVerdict.decision === "allow" && blockingRuleReport) {
-        const span = resolveFindingSpan(rawPrompt, blockingRuleReport.ruleId);
+      // Precedence: guardrail error (fail closed) > block > detect > allow.
+      if (guardrailErrors.length > 0) {
+        const g = guardrailErrors[0];
+        const others = guardrailErrors.length - 1;
+        effectiveVerdict = {
+          decision: "block",
+          category: g.category,
+          reason: `Guardrail error on rule "${g.ruleName}": Jev answered ${fmtNoul(g.first)} in the battery and ${g.samples.map(fmtNoul).join(" / ")} on ${TYPESAFE_THRESHOLDS.retries} retries — no confident, agreeing answer, failed closed${others > 0 ? ` (+${others} more rule${others > 1 ? "s" : ""})` : ""}`,
+          span: { start: 0, end: rawPrompt.length },
+        };
+      } else if (blockingRuleReport) {
         effectiveVerdict = {
           decision: "block",
           category: blockingRuleReport.category,
-          reason: `Enforced by TypeSafe Jev rule "${blockingRuleReport.ruleName}" (noul=${blockingRuleReport.typesafeNoulProbability ?? 0.95})`,
-          span,
+          reason: `Enforced by TypeSafe Jev rule "${blockingRuleReport.ruleName}" (noul=${blockingRuleReport.typesafeNoulProbability}${blockingRuleReport.escalatedBySeverity ? `, escalated by severity=${severityScore.toFixed(2)}` : ""})`,
+          span: { start: 0, end: rawPrompt.length },
         };
-      } else if (
-        effectiveVerdict.decision === "allow" &&
-        detectingRuleReports.length > 0
-      ) {
+      } else if (detectingRuleReports.length > 0) {
         const primary = detectingRuleReports[0];
         const syntheticFindings: Finding[] = detectingRuleReports.map((r) => ({
           category: r.category,
-          match: r.maskedMatches[0] ?? maskMatch(rawPrompt.slice(0, 12)),
-          confidence: r.typesafeNoulProbability ?? 0.85,
+          match: `${r.ruleId} noul=${r.typesafeNoulProbability}`,
+          confidence: r.typesafeNoulProbability ?? 0,
           detector: r.ruleId,
         }));
         effectiveVerdict = {
@@ -494,27 +581,38 @@ async function startServer() {
         sanitizedEndUserOutput,
         downstreamStatus,
         triggeredRules: ruleReports,
+        guardrailErrors,
         entropyAnalysis,
         typesafeInternals: {
           endpoint: endpointUsed,
           httpStatus: statusCode,
-          requestedModel: "jev-latest",
-          model: decisionResult.model ?? "jev-latest",
+          requestedModel: TYPESAFE_MODEL,
+          model: decisionResult.model ?? TYPESAFE_MODEL,
           architecture:
-            "TypeSafe System One (Jev Non-Regressive Decision Model)",
-          totalOutputTokens: usage?.total_output_tokens ?? 0,
-          totalInputTokens:
-            usage?.prompt_tokens ??
-            usage?.input_tokens ??
-            usage?.total_tokens ??
-            usage?.total_input_tokens ??
-            null,
+            "TypeSafe System One (Jev Non-Autoregressive Decision Model)",
+          noulActionThreshold: TYPESAFE_THRESHOLDS.noulAction,
+          thresholds: TYPESAFE_THRESHOLDS,
+          severityScore: Number(severityScore.toFixed(2)),
+          reviewCount: ruleReports.filter((r) => r.band === "review").length,
+          totalOutputTokens: usage?.output_tokens ?? 0,
+          totalInputTokens: usage?.input_tokens ?? null,
           decisionsLatencyMs,
+          retryLatencyMs,
+          retries: retryReports,
+          retryPolicy: {
+            confidence: TYPESAFE_THRESHOLDS.retryConfidence,
+            attempts: TYPESAFE_THRESHOLDS.retries,
+            onDisagreement: "fail closed",
+          },
           totalPipelineLatencyMs: totalLatencyMs,
           requestPayload: {
             endpoint: endpointUsed,
-            model: "jev-latest",
+            model: TYPESAFE_MODEL,
             statePreview: sanitizedPrompt,
+            state: {
+              ...typesafeState,
+              request: { prompt: sanitizedPrompt },
+            },
             questionCount: Object.keys(questionsPayload).length,
             questions: questionsPayload,
           },
@@ -530,9 +628,14 @@ async function startServer() {
     }
   });
 
+  // Create the HTTP server first so Vite's HMR websocket can share it
+  // (otherwise Vite binds a separate fixed port 24678, which collides when
+  // more than one dev server is running and the browser logs WS errors).
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: { server: httpServer } },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -544,7 +647,17 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(
+        `Port ${PORT} is already in use. Start with PORT=<free port> bun run dev`
+      );
+      process.exit(1);
+    }
+    throw err;
+  });
+
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(
       `TypeSafe Guardrail Studio running on http://localhost:${PORT}`
     );

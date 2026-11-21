@@ -1,6 +1,6 @@
 {
   "name": "TypeSafe Guardrail Studio",
-  "description": "Production-grade prompt guardrail control plane and non-regressive decision model evaluator powered by TypeSafe and Gemini Decisions API.",
+  "description": "Production-grade prompt guardrail control plane and non-autoregressive (System One) decision model evaluator powered by TypeSafe.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }
