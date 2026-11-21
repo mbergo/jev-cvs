@@ -29,6 +29,7 @@ const STRICT_BLOCK_CREDENTIALS_POLICY: GuardrailPolicy = parseGuardrailPolicy({
     pii: { action: "redact", minConfidence: 0.75 },
     secret_key: { action: "block", minConfidence: 0.8 },
     prompt_injection: { action: "block", minConfidence: 0.75 },
+    confidential_data: { action: "block", minConfidence: 0.75 },
   },
 });
 
@@ -38,6 +39,7 @@ const REDACT_ALL_POLICY: GuardrailPolicy = parseGuardrailPolicy({
     pii: { action: "redact", minConfidence: 0.75 },
     secret_key: { action: "redact", minConfidence: 0.8 },
     prompt_injection: { action: "redact", minConfidence: 0.75 },
+    confidential_data: { action: "redact", minConfidence: 0.75 },
   },
 });
 

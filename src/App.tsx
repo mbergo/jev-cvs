@@ -1,1723 +1,614 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  CheckCircle2,
+  ArrowRight,
   ChevronDown,
-  Code2,
-  Cpu,
-  EyeOff,
-  FileCheck2,
-  Filter,
-  Layers,
-  Lock,
+  ChevronRight,
   Play,
   RotateCcw,
-  Search,
-  Shield,
   ShieldAlert,
   ShieldCheck,
-  Sliders,
-  Terminal,
   X,
+  Zap,
 } from "lucide-react";
 import {
-  buildGuardrailPolicyFromControlPlane,
+  buildRulePresets,
   type ControlPlaneRule,
   INITIAL_CONTROL_PLANE_RULES,
-  PRESET_PROMPTS,
+  NEGATIVE_PRESET_PROMPTS,
   type PresetPromptItem,
   type RuleEnforcementMode,
+  type RuleGroup,
 } from "./data/controlPlaneRules";
-import { evaluatePrompt, formatVerdictAuditLog } from "./guardrails/evaluator";
-import type { GuardrailCategory, GuardrailVerdict } from "./guardrails/types";
+import InsideJev from "./components/InsideJev";
+import LiveWire, { type WireEntry } from "./components/LiveWire";
+import { TYPESAFE_THRESHOLDS } from "./guardrails/typesafe";
 
-interface TriggeredRuleReport {
+// ─── Types (mirror of /api/evaluate) ──────────────────────────────────────
+
+type Band = "pass" | "review" | "action";
+
+interface TriggeredRule {
   ruleId: string;
   ruleName: string;
-  category: GuardrailCategory;
   mode: RuleEnforcementMode;
-  deterministicMatched: boolean;
-  maskedMatches: string[];
   typesafeNoulProbability: number | null;
-  typesafeConfidence: number | null;
+  band: Band;
+  escalatedBySeverity: boolean;
   actionTaken:
     | "Enforced (Blocked)"
     | "Alerted & Sanitized"
+    | "Flagged for Review"
     | "Ignored (Bypassed)";
 }
 
-interface EntropyItem {
-  maskedToken: string;
-  length: number;
-  shannonEntropy: number;
-  exceedsThreshold: boolean;
-}
+interface NoulAnswer { type: "noul"; noul: number }
+interface ChoiceAnswer { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
+interface ScoreAnswer { type: "score"; score: number; probabilities: Record<string, number>; legend?: Record<string, string> }
+type Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer;
 
-interface NoulAnswer {
-  type: "noul";
-  noul: number;
-  confidence: number;
-}
-
-interface ChoiceAnswer {
-  type: "choice";
-  choice: string;
-  probabilities: Record<string, number>;
-  confidence: number;
-}
-
-interface ScoreAnswer {
-  type: "score";
-  score: number;
-  probabilities: Record<string, number>;
-  legend?: Record<string, string>;
-  confidence: number;
-}
-
-type DecisionAnswer = NoulAnswer | ChoiceAnswer | ScoreAnswer;
-
-interface EvaluationApiResponse {
-  contractVerdict: GuardrailVerdict;
-  effectiveVerdict: GuardrailVerdict;
-  contractAuditLog: string;
-  compiledPolicy: unknown;
-  sanitizedPrompt: string;
-  sanitizedEndUserOutput: string;
-  downstreamStatus: "blocked" | "sanitized_and_completed" | "clean_completed";
-  triggeredRules: TriggeredRuleReport[];
-  entropyAnalysis: EntropyItem[];
+interface EvalResult {
+  effectiveVerdict:
+    | { decision: "allow" }
+    | { decision: "block"; category: string; reason: string }
+    | { decision: "redact"; category: string };
+  triggeredRules: TriggeredRule[];
   typesafeInternals: {
     endpoint: string;
-    httpStatus: number;
-    requestedModel: string;
+    httpStatus?: number;
     model: string;
-    architecture: string;
-    totalOutputTokens: number;
+    thresholds: { noulAction: number; noulReview: number; severityBlock: number };
+    severityScore: number;
     totalInputTokens: number | null;
+    totalOutputTokens: number;
     decisionsLatencyMs: number;
-    totalPipelineLatencyMs: number;
-    requestPayload: {
-      endpoint: string;
-      model: string;
-      statePreview: string;
-      questionCount: number;
-      questions: Record<string, unknown>;
-    };
-    rawAnswers: Record<string, DecisionAnswer>;
+    totalPipelineLatencyMs?: number;
+    requestPayload: { state: unknown; questions: Record<string, unknown> };
+    rawAnswers: Record<string, Answer>;
   };
 }
 
-interface TestSuiteResultItem {
-  id: string;
-  name: string;
-  input: string;
-  expectedDecision: GuardrailVerdict["decision"];
-  actualVerdict: GuardrailVerdict;
-  auditLog: string;
-  passed: boolean;
-  rawMaskingVerified: boolean;
-  durationMs: number;
-}
+const GROUPS: RuleGroup[] = ["PII", "Credentials & Secrets", "Confidential Data", "Injection & Execution", "Harmful Content"];
 
-function HighSeverityStackIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden="true"
-      className="shrink-0"
-    >
-      <path d="M8 1L14 4.2L8 7.4L2 4.2L8 1Z" fill="#525866" />
-      <path
-        d="M2 7.8L8 11L14 7.8"
-        stroke="#F43F5E"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M2 11.4L8 14.6L14 11.4"
-        stroke="#E11D48"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+const VERDICT_LABEL: Record<EvalResult["effectiveVerdict"]["decision"], string> = {
+  allow: "ALLOW",
+  redact: "ALERT",
+  block: "BLOCK",
+};
 
-function SensitivityDotsIndicator() {
+// ─── Small components ──────────────────────────────────────────────────────
+
+function NoulBar({ p, thresholds }: { p: number | null; thresholds?: EvalResult["typesafeInternals"]["thresholds"] }) {
+  const action = thresholds?.noulAction ?? 0.7;
+  const review = thresholds?.noulReview ?? 0.35;
+  const band: Band = p === null ? "pass" : p >= action ? "action" : p >= review ? "review" : "pass";
+  const color = band === "action" ? "bg-rose-500" : band === "review" ? "bg-sky-400" : "bg-emerald-500";
+  const text = band === "action" ? "text-rose-300" : band === "review" ? "text-sky-300" : "text-neutral-500";
   return (
-    <div
-      className="hidden sm:flex items-center gap-1"
-      title="Calibrated threshold sensitivity (0.65)"
-      aria-hidden="true"
-    >
-      <span className="w-1.5 h-1.5 border border-neutral-600 rounded-[1px]" />
-      <span className="w-1.5 h-1.5 border border-neutral-600 rounded-[1px]" />
-      <span className="w-1.5 h-1.5 bg-neutral-100 rounded-[1px]" />
-      <span className="w-1.5 h-1.5 border border-neutral-600 rounded-[1px]" />
-      <span className="w-1.5 h-1.5 border border-neutral-600 rounded-[1px]" />
+    <div className="flex items-center gap-2 w-40 shrink-0">
+      <div className="relative flex-1 h-2 bg-neutral-800 rounded-full overflow-hidden">
+        {p !== null && <div className={`h-full ${color} transition-all duration-500`} style={{ width: `${Math.max(2, p * 100)}%` }} />}
+        <div className="absolute top-0 bottom-0 w-px bg-neutral-500" style={{ left: `${action * 100}%` }} />
+      </div>
+      <span className={`font-mono text-sm tabular-nums w-10 text-right ${text}`}>{p === null ? "—" : p.toFixed(2)}</span>
     </div>
   );
 }
 
+function ModeToggle({ mode, onChange }: { mode: RuleEnforcementMode; onChange: (m: RuleEnforcementMode) => void }) {
+  const opts: { m: RuleEnforcementMode; label: string; on: string }[] = [
+    { m: "Block", label: "Enforce", on: "bg-rose-600 text-white" },
+    { m: "Detect", label: "Alert", on: "bg-amber-500 text-black" },
+    { m: "Ignore", label: "Ignore", on: "bg-neutral-600 text-white" },
+  ];
+  return (
+    <div className="flex rounded border border-neutral-800 overflow-hidden shrink-0">
+      {opts.map((o) => (
+        <button key={o.m} type="button" onClick={() => onChange(o.m)}
+          className={`px-2 py-1.5 text-[13px] font-medium cursor-pointer ${mode === o.m ? o.on : "bg-[#0B0D11] text-neutral-400 hover:text-white"}`}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Collapsible({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border border-neutral-800 rounded-lg bg-[#111318]">
+      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-neutral-300 cursor-pointer">
+        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}{title}
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
+    </div>
+  );
+}
+
+// ─── App ───────────────────────────────────────────────────────────────────
+
 export default function App() {
-  const [activeNavTab, setActiveNavTab] = useState<
-    "workspace" | "control-plane" | "internals" | "test-suite"
-  >("workspace");
+  const [rules, setRules] = useState<ReadonlyArray<ControlPlaneRule>>(INITIAL_CONTROL_PLANE_RULES);
+  const [prompt, setPrompt] = useState(INITIAL_CONTROL_PLANE_RULES[0].sampleViolationPrompt);
+  const [selectedPreset, setSelectedPreset] = useState(`preset-${INITIAL_CONTROL_PLANE_RULES[0].id}`);
+  const [result, setResult] = useState<EvalResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [inside, setInside] = useState<boolean>(() => localStorage.getItem("insideJev") === "1");
+  const [runId, setRunId] = useState(0);
+  useEffect(() => { localStorage.setItem("insideJev", inside ? "1" : "0"); }, [inside]);
+  // Live wire: the latest browser → policy server round-trip, shown as devtools would.
+  const [wireOn, setWireOn] = useState<boolean>(() => localStorage.getItem("liveWire") === "1");
+  useEffect(() => { localStorage.setItem("liveWire", wireOn ? "1" : "0"); }, [wireOn]);
+  const [wire, setWire] = useState<WireEntry | null>(null);
+  const wireSeq = useRef(0);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ connected: boolean; model: string; error?: string } | null>(null);
+  const [editing, setEditing] = useState<ControlPlaneRule | null>(null);
+  const [draft, setDraft] = useState({ ask: "", yes: "", no: "", examples: "", sample: "" });
 
-  const [rules, setRules] = useState<ReadonlyArray<ControlPlaneRule>>(
-    INITIAL_CONTROL_PLANE_RULES
-  );
-  const [ruleSearch, setRuleSearch] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<
-    "all" | GuardrailCategory
-  >("all");
-  const [editingRule, setEditingRule] = useState<ControlPlaneRule | null>(null);
-  const [editPatternDraft, setEditPatternDraft] = useState("");
-  const [editQuestionDraft, setEditQuestionDraft] = useState("");
-  const [editSamplePromptDraft, setEditSamplePromptDraft] = useState("");
+  // Batch run ("Run all 25")
+  interface BatchRow { id: string; label: string; expected: "flag" | "allow"; decision?: string; own?: number | null; ms?: number; ok?: boolean }
+  const [batch, setBatch] = useState<BatchRow[] | null>(null);
+  const [batchBusy, setBatchBusy] = useState(false);
 
-  const [presetGroupFilter, setPresetGroupFilter] = useState<
-    "all" | PresetPromptItem["group"] | "Custom User Prompts"
-  >("all");
-  const [customPresets, setCustomPresets] = useState<PresetPromptItem[]>([]);
-  const [customPromptInput, setCustomPromptInput] = useState<string>("");
-  const [customPromptLabel, setCustomPromptLabel] = useState<string>("");
-  const [selectedPresetId, setSelectedPresetId] = useState<string>(
-    PRESET_PROMPTS[0].id
-  );
-  const [promptInput, setPromptInput] = useState<string>(
-    PRESET_PROMPTS[0].prompt
-  );
-  const [isEvaluating, setIsEvaluating] = useState(false);
-  const [evalError, setEvalError] = useState<string | null>(null);
-  const [apiResult, setApiResult] = useState<EvaluationApiResponse | null>(
-    null
-  );
-
-  const [testSuiteData, setTestSuiteData] = useState<{
-    total: number;
-    passed: number;
-    results: TestSuiteResultItem[];
-  } | null>(null);
-  const [isLoadingTests, setIsLoadingTests] = useState(false);
-  const [typesafeStatus, setTypesafeStatus] = useState<{
-    connected: boolean;
-    endpoint: string;
-    model: string;
-  } | null>(null);
-
-  // Instant client-side preview of the strict TypeScript evaluatePrompt contract
-  const livePolicy = useMemo(
-    () => buildGuardrailPolicyFromControlPlane(rules),
-    [rules]
-  );
-
-  const liveLocalVerdict = useMemo(
-    () => evaluatePrompt(promptInput, livePolicy),
-    [promptInput, livePolicy]
-  );
-
-  const liveAuditLog = useMemo(
-    () => formatVerdictAuditLog(liveLocalVerdict),
-    [liveLocalVerdict]
-  );
-
-  const filteredRules = useMemo(() => {
-    return rules.filter((r) => {
-      const matchesCategory =
-        categoryFilter === "all" || r.category === categoryFilter;
-      const matchesSearch =
-        ruleSearch.trim() === "" ||
-        r.name.toLowerCase().includes(ruleSearch.toLowerCase()) ||
-        r.category.toLowerCase().includes(ruleSearch.toLowerCase());
-      return matchesCategory && matchesSearch;
-    });
-  }, [rules, categoryFilter, ruleSearch]);
-
-  const ruleModeCounts = useMemo(() => {
-    let block = 0;
-    let detect = 0;
-    let ignore = 0;
-    for (const r of rules) {
-      if (r.mode === "Block") block++;
-      else if (r.mode === "Detect") detect++;
-      else ignore++;
-    }
-    return { block, detect, ignore };
-  }, [rules]);
-
-  const handleRuleModeChange = (
-    ruleId: string,
-    newMode: RuleEnforcementMode
-  ) => {
-    setRules((prev) =>
-      prev.map((r) => (r.id === ruleId ? { ...r, mode: newMode } : r))
-    );
-  };
-
-  const handleBulkSetMode = (mode: RuleEnforcementMode) => {
-    setRules((prev) => prev.map((r) => ({ ...r, mode })));
-  };
-
-  const handleResetDefaultRules = () => {
-    setRules(INITIAL_CONTROL_PLANE_RULES);
-  };
-
-  const handleOpenEditModal = (rule: ControlPlaneRule) => {
-    setEditingRule(rule);
-    setEditPatternDraft(rule.customPatternDescription);
-    setEditQuestionDraft(rule.typesafeQuestion.instructions);
-    setEditSamplePromptDraft(rule.sampleViolationPrompt);
-  };
-
-  const handleSaveRuleEdit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingRule) return;
-    setRules((prev) =>
-      prev.map((r) =>
-        r.id === editingRule.id
-          ? {
-              ...r,
-              customPatternDescription: editPatternDraft.trim(),
-              sampleViolationPrompt: editSamplePromptDraft.trim(),
-              typesafeQuestion: {
-                ...r.typesafeQuestion,
-                instructions: editQuestionDraft.trim(),
-              },
-            }
-          : r
-      )
-    );
-    setEditingRule(null);
-  };
-
-  const handleTestSingleRule = (rule: ControlPlaneRule) => {
-    setSelectedPresetId(`preset-${rule.id}`);
-    setPromptInput(rule.sampleViolationPrompt);
-    setEvalError(null);
-    runTypeSafeEvaluation(rule.sampleViolationPrompt);
-  };
-
-  const handleSelectPreset = (preset: PresetPromptItem) => {
-    setSelectedPresetId(preset.id);
-    setPromptInput(preset.prompt);
-    setEvalError(null);
-  };
-
-  const handleTestCustomPrompt = () => {
-    const trimmed = customPromptInput.trim();
-    if (!trimmed) {
-      setEvalError("Please enter a custom prompt in the custom prompt textarea.");
-      return;
-    }
-    setSelectedPresetId("custom-active");
-    setPromptInput(trimmed);
-    setEvalError(null);
-    runTypeSafeEvaluation(trimmed);
-  };
-
-  const handleSaveCustomPreset = () => {
-    const trimmed = customPromptInput.trim();
-    if (!trimmed) return;
-    const newId = `custom-${Date.now()}`;
-    const label =
-      customPromptLabel.trim() ||
-      `Custom Prompt #${customPresets.length + 1}`;
-    const newPreset: PresetPromptItem = {
-      id: newId,
-      label,
-      group: "4. Safe & Negative Fixtures (4)",
-      badge: "Custom",
-      prompt: trimmed,
-      expectedBehavior: "User-defined custom test prompt",
-    };
-    setCustomPresets((prev) => [newPreset, ...prev]);
-    setSelectedPresetId(newId);
-    setPromptInput(trimmed);
-    setCustomPromptLabel("");
-  };
-
-  const runTypeSafeEvaluation = async (overridePrompt?: string) => {
-    const targetPrompt = overridePrompt ?? promptInput;
-    if (!targetPrompt.trim()) {
-      setEvalError("Please enter or select a prompt to evaluate.");
-      return;
-    }
-
-    setIsEvaluating(true);
-    setEvalError(null);
-
-    try {
-      const response = await fetch("/api/evaluate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: targetPrompt,
-          rules,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || `HTTP ${response.status} evaluation error`);
-      }
-
-      setApiResult(data as EvaluationApiResponse);
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to evaluate prompt.";
-      setEvalError(msg);
-    } finally {
-      setIsEvaluating(false);
-    }
-  };
-
-  const fetchTestSuite = async () => {
-    setIsLoadingTests(true);
-    try {
-      const response = await fetch("/api/test-suite");
-      if (response.ok) {
-        const data = await response.json();
-        setTestSuiteData(data);
-      }
-    } catch {
-      // Ignore background fetch error
-    } finally {
-      setIsLoadingTests(false);
-    }
-  };
+  const presets = useMemo<PresetPromptItem[]>(() => [...buildRulePresets(rules), ...NEGATIVE_PRESET_PROMPTS], [rules]);
 
   useEffect(() => {
-    fetchTestSuite();
-    fetch("/api/typesafe-status")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (d) setTypesafeStatus(d);
-      })
-      .catch(() => {});
+    fetch("/api/typesafe-status").then((r) => r.json()).then(setStatus).catch(() => setStatus({ connected: false, model: "jev-latest", error: "unreachable" }));
   }, []);
 
-  const primaryChoiceAnswer = useMemo(() => {
-    const ans =
-      apiResult?.typesafeInternals.rawAnswers?.["primary_threat_vector"];
-    return ans && ans.type === "choice" ? ans : null;
-  }, [apiResult]);
+  async function evaluate(p: string, r: ReadonlyArray<ControlPlaneRule>): Promise<EvalResult> {
+    const body = { prompt: p, rules: r };
+    const id = ++wireSeq.current;
+    const t0 = performance.now();
+    // Log the round-trip as it happens: TX at send time, RX when the reply lands. Every call
+    // goes through here, so the batch run streams too. Only the latest is kept.
+    setWire({ id, startedAt: Date.now(), method: "POST", url: "/api/evaluate", request: body });
+    const patch = (u: Partial<WireEntry>) => setWire((w) => (w && w.id === id ? { ...w, ...u } : w));
+    try {
+      const res = await fetch("/api/evaluate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await res.json();
+      patch({ status: res.status, ms: Math.round(performance.now() - t0), response: data });
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      return data as EvalResult;
+    } catch (e) {
+      patch({ ms: Math.round(performance.now() - t0), error: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  }
 
-  const severityScoreAnswer = useMemo(() => {
-    const ans =
-      apiResult?.typesafeInternals.rawAnswers?.["threat_severity_rubric"];
-    return ans && ans.type === "score" ? ans : null;
-  }, [apiResult]);
+  async function run(p = prompt, r = rules) {
+    if (!p.trim()) return;
+    setBusy(true); setError(null);
+    try { setResult(await evaluate(p, r)); setRunId((n) => n + 1); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  }
 
-  const ruleNoulEntries = useMemo(() => {
-    if (!apiResult) return [];
-    const answers = apiResult.typesafeInternals.rawAnswers;
-    return rules
-      .filter((r) => r.mode !== "Ignore")
-      .map((rule) => {
-        const ans = answers[rule.id];
-        const noul = ans && ans.type === "noul" ? ans.noul : 0.01;
-        const confidence = ans && ans.type === "noul" ? ans.confidence : 0.99;
-        return {
-          rule,
-          noul,
-          confidence,
-          triggered: noul >= 0.65,
-        };
-      })
-      .sort((a, b) => b.noul - a.noul);
-  }, [apiResult, rules]);
+  function applyRules(next: ReadonlyArray<ControlPlaneRule>) {
+    setRules(next);
+    if (result) run(prompt, next);
+  }
+
+  function testRule(rule: ControlPlaneRule) {
+    setSelectedPreset(`preset-${rule.id}`);
+    setPrompt(rule.sampleViolationPrompt);
+    run(rule.sampleViolationPrompt, rules);
+  }
+
+  function pickPreset(p: PresetPromptItem) {
+    setSelectedPreset(p.id);
+    setPrompt(p.prompt);
+    run(p.prompt, rules);
+  }
+
+  function openEdit(rule: ControlPlaneRule) {
+    setEditing(rule);
+    setDraft({
+      ask: rule.typesafeQuestion.instructions,
+      yes: rule.typesafeQuestion.trueDescription,
+      no: rule.typesafeQuestion.falseDescription,
+      examples: rule.typesafeQuestion.examples.join("\n"),
+      sample: rule.sampleViolationPrompt,
+    });
+  }
+
+  function saveEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    const next = rules.map((r) => r.id !== editing.id ? r : {
+      ...r,
+      sampleViolationPrompt: draft.sample.trim(),
+      typesafeQuestion: {
+        instructions: draft.ask.trim(),
+        trueDescription: draft.yes.trim(),
+        falseDescription: draft.no.trim(),
+        examples: draft.examples.split("\n").map((s) => s.trim()).filter(Boolean),
+      },
+    });
+    if (selectedPreset === `preset-${editing.id}`) setPrompt(draft.sample.trim());
+    setEditing(null);
+    applyRules(next);
+  }
+
+  async function runAll() {
+    const toRun = presets.filter((p) => p.ruleId);
+    const rows: BatchRow[] = toRun.map((p) => ({ id: p.id, label: p.label, expected: p.ruleId ? "flag" : "allow" }));
+    setBatch(rows); setBatchBusy(true);
+    for (let i = 0; i < toRun.length; i++) {
+      const p = toRun[i];
+      try {
+        const r = await evaluate(p.prompt, rules);
+        const own = p.ruleId ? r.typesafeInternals.rawAnswers[p.ruleId] : null;
+        const ownNoul = own && own.type === "noul" ? own.noul : null;
+        const flagged = r.effectiveVerdict.decision !== "allow";
+        const ok = p.ruleId ? flagged && (ownNoul ?? 0) >= r.typesafeInternals.thresholds.noulAction : !flagged;
+        rows[i] = { ...rows[i], decision: VERDICT_LABEL[r.effectiveVerdict.decision], own: ownNoul, ms: r.typesafeInternals.decisionsLatencyMs, ok };
+      } catch (e) {
+        rows[i] = { ...rows[i], decision: "ERROR", ok: false };
+      }
+      setBatch([...rows]);
+    }
+    setBatchBusy(false);
+  }
+
+  // Derived
+  const answers = result?.typesafeInternals.rawAnswers ?? {};
+  const noulOf = (id: string): number | null => { const a = answers[id]; return a && a.type === "noul" ? a.noul : null; };
+  const vector = answers["primary_threat_vector"] as ChoiceAnswer | undefined;
+  const severity = answers["threat_severity_rubric"] as ScoreAnswer | undefined;
+  const verdict = result?.effectiveVerdict.decision;
+  const counts = { block: rules.filter((r) => r.mode === "Block").length, alert: rules.filter((r) => r.mode === "Detect").length, ignore: rules.filter((r) => r.mode === "Ignore").length };
+  const batchPassed = batch?.filter((b) => b.ok).length ?? 0;
+  const batchDone = batch?.filter((b) => b.decision).length ?? 0;
 
   return (
-    <div className="min-h-screen bg-[#0B0D11] text-neutral-100 flex flex-col">
-      {/* Top Bar Contract: Zone 1 (Brand) — Zone 2 (4 Nav Links) — Zone 3 (1 Primary Action) */}
-      <header className="flex items-center justify-between gap-8 px-6 py-3.5 border-b border-neutral-800 bg-[#0F1218] sticky top-0 z-30">
-        <a
-          href="#top"
-          onClick={(e) => {
-            e.preventDefault();
-            setActiveNavTab("workspace");
-          }}
-          className="text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0"
-        >
-          TypeSafe Guardrail Studio
-        </a>
-
-        <nav
-          aria-label="Primary Workspace Views"
-          className="hidden md:flex items-center gap-6 text-sm font-medium text-neutral-400"
-        >
-          <button
-            type="button"
-            onClick={() => setActiveNavTab("workspace")}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
-              activeNavTab === "workspace"
-                ? "text-white border-emerald-500"
-                : "border-transparent hover:text-neutral-200"
-            }`}
-          >
-            Split Workspace
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveNavTab("control-plane")}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
-              activeNavTab === "control-plane"
-                ? "text-white border-emerald-500"
-                : "border-transparent hover:text-neutral-200"
-            }`}
-          >
-            Guardrails Control Plane
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveNavTab("internals")}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
-              activeNavTab === "internals"
-                ? "text-white border-emerald-500"
-                : "border-transparent hover:text-neutral-200"
-            }`}
-          >
-            TypeSafe Model Internals
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setActiveNavTab("test-suite");
-              fetchTestSuite();
-            }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
-              activeNavTab === "test-suite"
-                ? "text-white border-emerald-500"
-                : "border-transparent hover:text-neutral-200"
-            }`}
-          >
-            Contract Test Fixtures
-          </button>
-        </nav>
-
-        <div className="flex items-center gap-3 shrink-0">
-          <button
-            type="button"
-            onClick={() => runTypeSafeEvaluation()}
-            disabled={isEvaluating}
-            className="px-4 py-2 text-xs font-semibold text-neutral-950 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 rounded-md transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 cursor-pointer"
-          >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span>
-              {isEvaluating ? "Evaluating Pipeline..." : "Evaluate Prompt"}
-            </span>
-          </button>
+    <div className="min-h-screen bg-[#0B0D11] text-neutral-100">
+      {/* Header */}
+      <header className="border-b border-neutral-800 px-6 py-4 flex items-center justify-between gap-8 sticky top-0 bg-[#0B0D11]/95 backdrop-blur z-10">
+        <div className="flex items-center gap-3">
+          <ShieldCheck className="w-5 h-5 text-emerald-400" />
+          <div>
+            <h1 className="text-base font-bold tracking-tight">Non-Autoregressive Guardrails for AI Gateways</h1>
+            <p className="text-[13px] text-neutral-500">TypeSafe Jev · {rules.length} rules · one question per rule · one HTTP call · no regex</p>
+          </div>
+        </div>
+        <div className="hidden lg:flex items-center gap-6 text-[13px] font-mono text-neutral-400 whitespace-nowrap">
+          <span className={status?.connected ? "text-emerald-400" : "text-rose-400"}>● {status ? (status.connected ? `api.typesafe.ai · ${result?.typesafeInternals.model ?? status.model}` : `offline: ${status.error}`) : "connecting…"}</span>
+          <span className="text-neutral-500">{counts.block} enforce · {counts.alert} alert · {counts.ignore} ignore</span>
+          <button type="button" onClick={() => applyRules(INITIAL_CONTROL_PLANE_RULES)} className="flex items-center gap-1 text-neutral-400 hover:text-white cursor-pointer"><RotateCcw className="w-3 h-3" />reset</button>
         </div>
       </header>
 
-      {/* Mobile Navigation Bar */}
-      <div className="flex md:hidden items-center gap-1 px-4 py-2 border-b border-neutral-800 bg-[#0F1218] overflow-x-auto">
-        {(
-          [
-            { id: "workspace", label: "Workspace" },
-            { id: "control-plane", label: "Control Plane" },
-            { id: "internals", label: "TypeSafe Internals" },
-            { id: "test-suite", label: "Test Fixtures" },
-          ] as const
-        ).map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveNavTab(tab.id)}
-            className={`px-3 py-1.5 text-xs font-medium rounded whitespace-nowrap shrink-0 ${
-              activeNavTab === tab.id
-                ? "bg-neutral-800 text-white"
-                : "text-neutral-400 hover:text-neutral-200"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 py-6 flex flex-col gap-6">
-        {/* Top Summary Strip */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-[#12151E] border border-neutral-800 rounded-lg p-4">
-            <div className="text-xs text-neutral-400">
-              Deduplicated Control Plane Rules
+      <main className={`p-6 grid grid-cols-1 gap-6 mx-auto ${inside ? "w-full px-8 xl:grid-cols-2" : "xl:grid-cols-[1.4fr_1fr] max-w-[1700px]"}`}>
+        {/* ── Prompt, verdict, data ──────────────────────────── */}
+        <section className="flex flex-col gap-6">
+          {/* Prompt */}
+          <div className="border border-neutral-800 rounded-lg bg-[#111318] p-6 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold ">Prompt entering the gateway</h2>
+              <select value={selectedPreset} onChange={(e) => { const p = presets.find((x) => x.id === e.target.value); if (p) pickPreset(p); }} className="bg-[#0B0D11] border border-neutral-700 rounded text-sm px-2 py-1.5 max-w-[260px]">
+                <option value="custom">— custom —</option>
+                {GROUPS.map((g) => (
+                  <optgroup key={g} label={g}>
+                    {rules.filter((r) => r.group === g).map((r) => <option key={r.id} value={`preset-${r.id}`}>{r.name}</option>)}
+                  </optgroup>
+                ))}
+                <optgroup label="Safe / negative">
+                  {NEGATIVE_PRESET_PROMPTS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                </optgroup>
+              </select>
             </div>
-            <div className="mt-1 flex items-baseline justify-between">
-              <span className="text-2xl font-bold text-white tabular-nums">
-                {rules.length}
-              </span>
-              <span className="text-xs text-neutral-400 tabular-nums">
-                {ruleModeCounts.block} Enforce · {ruleModeCounts.detect} Alert ·{" "}
-                {ruleModeCounts.ignore} Ignore
-              </span>
-            </div>
-          </div>
-
-          <div className="bg-[#12151E] border border-neutral-800 rounded-lg p-4">
-            <div className="text-xs text-neutral-400">
-              Instant Contract Verdict (Sync)
-            </div>
-            <div className="mt-1 flex items-baseline justify-between">
-              <span
-                className={`text-lg font-bold uppercase tracking-tight ${
-                  liveLocalVerdict.decision === "block"
-                    ? "text-rose-400"
-                    : liveLocalVerdict.decision === "redact"
-                    ? "text-amber-400"
-                    : "text-emerald-400"
-                }`}
-              >
-                {liveLocalVerdict.decision}
-              </span>
-              <span className="text-xs text-neutral-400">
-                {liveLocalVerdict.decision === "allow"
-                  ? "No local regex trigger"
-                  : `Category: ${liveLocalVerdict.category}`}
-              </span>
-            </div>
-          </div>
-
-          <div className="bg-[#12151E] border border-neutral-800 rounded-lg p-4">
-            <div className="text-xs text-neutral-400">
-              TypeSafe Endpoint (docs.typesafe.ai)
-            </div>
-            <div className="mt-1 flex items-baseline justify-between gap-2">
-              <span className="text-sm font-semibold text-white font-mono truncate">
-                {apiResult?.typesafeInternals.model ??
-                  typesafeStatus?.model ??
-                  "jev-latest"}
-              </span>
-              <span
-                className={`text-xs font-mono tabular-nums shrink-0 ${
-                  typesafeStatus?.connected === false
-                    ? "text-amber-400"
-                    : "text-emerald-400"
-                }`}
-              >
-                {typesafeStatus?.connected === false
-                  ? "Key Missing"
-                  : "api.typesafe.ai/v1"}
-              </span>
-            </div>
-          </div>
-
-          <div className="bg-[#12151E] border border-neutral-800 rounded-lg p-4">
-            <div className="text-xs text-neutral-400">
-              Table-Driven Contract Suite
-            </div>
-            <div className="mt-1 flex items-baseline justify-between">
-              <span className="text-2xl font-bold text-emerald-400 tabular-nums">
-                {testSuiteData
-                  ? `${testSuiteData.passed}/${testSuiteData.total}`
-                  : "11/11"}
-              </span>
-              <span className="text-xs text-neutral-400">
-                UUID & Git SHA negatives passing
-              </span>
-            </div>
-          </div>
-        </section>
-
-        {/* Triggered Guardrail Notification Banner (Shown whenever any rule is triggered in Block, Detect, or Ignore mode) */}
-        {apiResult && apiResult.triggeredRules.length > 0 && (
-          <section
-            aria-label="Triggered Guardrail Notification"
-            className={`border rounded-lg p-4 ${
-              apiResult.effectiveVerdict.decision === "block"
-                ? "bg-rose-950/30 border-rose-800/80 text-rose-100"
-                : "bg-amber-950/30 border-amber-800/80 text-amber-100"
-            }`}
-          >
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-              <div className="flex items-start gap-3">
-                {apiResult.effectiveVerdict.decision === "block" ? (
-                  <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-                ) : (
-                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                )}
-                <div>
-                  <h2 className="text-sm font-semibold">
-                    {apiResult.effectiveVerdict.decision === "block"
-                      ? `Execution Halted — ${apiResult.triggeredRules.length} Guardrail Rule(s) Triggered during Ingestion`
-                      : `Middle-Layer Guardrail Notification — ${apiResult.triggeredRules.length} Rule(s) Triggered & Sanitized Before Reaching End User`}
-                  </h2>
-                  <p className="text-xs text-neutral-300 mt-0.5">
-                    All raw matches are masked to first 4 chars +{" "}
-                    <code className="font-mono">****</code>. Sensitive spans
-                    were stripped prior to downstream output rendering.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveNavTab("internals")}
-                className="px-3 py-1.5 text-xs font-medium bg-neutral-900/90 hover:bg-neutral-800 text-neutral-100 border border-neutral-700 rounded transition-colors whitespace-nowrap shrink-0 self-start md:self-center cursor-pointer"
-              >
-                Inspect TypeSafe API Internals
+            <textarea value={prompt} onChange={(e) => { setPrompt(e.target.value); setSelectedPreset("custom"); }} rows={4} className="w-full bg-[#0B0D11] border border-neutral-700 rounded p-4 font-mono text-base resize-y focus:outline-none focus:border-emerald-600" placeholder="Paste any prompt…" />
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => run()} disabled={busy || !prompt.trim()} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-base font-semibold rounded cursor-pointer">
+                <Play className="w-4 h-4" />{busy ? "Evaluating…" : "Evaluate"}
               </button>
+              <button type="button" onClick={runAll} disabled={batchBusy} className="flex items-center gap-2 px-3 py-2 border border-neutral-700 hover:bg-neutral-800 disabled:opacity-50 text-base rounded cursor-pointer">
+                <Zap className="w-4 h-4 text-amber-400" />{batchBusy ? `Running ${batchDone}/${rules.length}…` : `Run all ${rules.length} presets`}
+              </button>
+              <button type="button" role="switch" aria-checked={inside} onClick={() => setInside((v) => !v)} className="ml-auto flex items-center gap-2 text-sm text-neutral-300 cursor-pointer select-none">
+                <span className={`relative w-8 h-4 rounded-full transition-colors ${inside ? "bg-violet-600" : "bg-neutral-700"}`}>
+                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${inside ? "left-4" : "left-0.5"}`} />
+                </span>
+                Inside Jev
+              </button>
+              <button type="button" role="switch" aria-checked={wireOn} onClick={() => setWireOn((v) => !v)} className="flex items-center gap-2 text-sm text-neutral-300 cursor-pointer select-none">
+                <span className={`relative w-8 h-4 rounded-full transition-colors ${wireOn ? "bg-emerald-600" : "bg-neutral-700"}`}>
+                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${wireOn ? "left-4" : "left-0.5"}`} />
+                </span>
+                Live wire
+              </button>
+              {error && <span className="text-sm text-rose-400 truncate">{error}</span>}
             </div>
+          </div>
 
-            <div className="mt-3 pt-3 border-t border-neutral-800/80 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
-              {apiResult.triggeredRules.map((tr) => (
-                <div
-                  key={tr.ruleId}
-                  className="bg-[#0B0D11]/90 border border-neutral-800 rounded px-3 py-2 flex items-center justify-between gap-2 text-xs"
-                >
-                  <div className="min-w-0">
-                    <div className="font-medium text-white truncate">
-                      {tr.ruleName}
-                    </div>
-                    <div className="text-neutral-400 font-mono text-[11px] mt-0.5 truncate">
-                      <span>
-                        Toggle:{" "}
-                        {tr.mode === "Block"
-                          ? "Enforce"
-                          : tr.mode === "Detect"
-                          ? "Alert"
-                          : "Ignore"}
-                      </span>
-                      <span aria-hidden="true"> · </span>
-                      <span>
-                        {tr.typesafeNoulProbability !== null
-                          ? `noul=${(tr.typesafeNoulProbability * 100).toFixed(1)}%`
-                          : "Regex Match"}
-                      </span>
-                      {tr.maskedMatches.length > 0 && (
-                        <>
-                          <span aria-hidden="true"> · </span>
-                          <span className="text-amber-300">
-                            {tr.maskedMatches.join(", ")}
-                          </span>
-                        </>
-                      )}
+          {/* Verdict */}
+          {result && (
+            <div className={`border rounded-lg p-6 ${verdict === "block" ? "border-rose-700 bg-rose-950/30" : verdict === "redact" ? "border-amber-700 bg-amber-950/25" : "border-emerald-700 bg-emerald-950/25"}`}>
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  {verdict === "block" ? <ShieldAlert className="w-8 h-8 text-rose-400" /> : verdict === "redact" ? <AlertTriangle className="w-8 h-8 text-amber-400" /> : <ShieldCheck className="w-8 h-8 text-emerald-400" />}
+                  <div>
+                    <div className="text-3xl font-bold tracking-tight">{VERDICT_LABEL[verdict!]}</div>
+                    <div className="text-sm text-neutral-300">
+                      {verdict === "block" && "Request halted — not forwarded to the LLM."}
+                      {verdict === "redact" && "Forwarded with notice — rules in Alert mode fired."}
+                      {verdict === "allow" && "Clean — forwarded to the LLM."}
                     </div>
                   </div>
-                  <span
-                    className={`text-[11px] font-medium shrink-0 ${
-                      tr.actionTaken === "Enforced (Blocked)"
-                        ? "text-rose-400"
-                        : tr.actionTaken === "Alerted & Sanitized"
-                        ? "text-amber-400"
-                        : "text-neutral-500"
-                    }`}
-                  >
-                    {tr.actionTaken}
-                  </span>
                 </div>
+                <div className="text-right text-[13px] font-mono text-neutral-400">
+                  <div>{result.typesafeInternals.model}</div>
+                  <div>{result.typesafeInternals.decisionsLatencyMs} ms for {Object.keys(result.typesafeInternals.requestPayload.questions).length} questions</div>
+                </div>
+              </div>
+              {result.triggeredRules.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {result.triggeredRules.map((t) => (
+                    <span key={t.ruleId} className={`text-[13px] font-mono px-2 py-0.5 rounded border ${t.actionTaken === "Enforced (Blocked)" ? "border-rose-700 text-rose-300" : t.actionTaken === "Flagged for Review" ? "border-sky-700 text-sky-300" : "border-amber-700 text-amber-300"}`}>
+                      {t.ruleName} {t.typesafeNoulProbability?.toFixed(2)}{t.escalatedBySeverity ? " ↑sev" : ""}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Vector + severity */}
+              <div className="mt-6 grid grid-cols-2 gap-10">
+                <div>
+                  <div className="text-xs text-neutral-500 mb-1.5">Threat vector (choice)</div>
+                  {vector && Object.entries(vector.probabilities).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
+                    <div key={k} className="flex items-center gap-2 text-[13px] font-mono mb-1.5">
+                      <span className={`w-52 truncate ${k === vector.choice ? "text-white" : "text-neutral-500"}`}>{k}</span>
+                      <div className="flex-1 h-2 bg-neutral-800 rounded"><div className={`h-full rounded ${k === vector.choice ? "bg-white" : "bg-neutral-600"}`} style={{ width: `${v * 100}%` }} /></div>
+                      <span className="w-10 text-right">{(v * 100).toFixed(0)}%</span>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div className="text-xs text-neutral-500 mb-1.5">Severity (score 0–3) · {severity?.score.toFixed(2)} · escalates reviews at ≥ {result.typesafeInternals.thresholds.severityBlock}</div>
+                  {severity && Object.entries(severity.probabilities).map(([lvl, v]) => (
+                    <div key={lvl} className="flex items-center gap-2 text-[13px] font-mono mb-1.5">
+                      <span className="w-52 truncate text-neutral-400">{lvl} · {severity.legend?.[lvl]?.split(":")[0]}</span>
+                      <div className="flex-1 h-2 bg-neutral-800 rounded"><div className={`h-full rounded ${Number(lvl) >= result.typesafeInternals.thresholds.severityBlock ? "bg-rose-500" : "bg-emerald-500"}`} style={{ width: `${v * 100}%` }} /></div>
+                      <span className="w-10 text-right">{(v * 100).toFixed(0)}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Inside Jev: only when the toggle is on */}
+          {result && inside && (
+            <InsideJev key={runId} result={result} ruleNames={Object.fromEntries(rules.map((r) => [r.id, r.name]))} />
+          )}
+
+          {/* Live wire: latest request/response on the wire, one side at a time */}
+          {wireOn && <LiveWire entry={wire} />}
+
+          {/* Batch results */}
+          {batch && (
+            <div className="border border-neutral-800 rounded-lg bg-[#111318] overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-neutral-800 flex items-center justify-between">
+                <h2 className="text-sm font-semibold ">All presets · live</h2>
+                <span className={`text-sm font-mono ${batchDone === batch.length && batchPassed === batch.length ? "text-emerald-400" : "text-neutral-300"}`}>{batchPassed}/{batchDone} pass{batchBusy ? "…" : ""}</span>
+              </div>
+              <div className="max-h-72 overflow-y-auto">
+                <table className="w-full text-[13px] font-mono">
+                  <thead className="text-neutral-500 sticky top-0 bg-[#111318]"><tr><th className="text-left px-4 py-1.5 font-normal">preset</th><th className="text-left px-2 font-normal">expect</th><th className="text-left px-2 font-normal">verdict</th><th className="text-right px-2 font-normal">own noul</th><th className="text-right px-2 font-normal">ms</th><th className="px-4 font-normal"></th></tr></thead>
+                  <tbody>
+                    {[...GROUPS.map((g) => ({ name: g as string, ids: rules.filter((r) => r.group === g).map((r) => `preset-${r.id}`) }))].map(({ name, ids }) => {
+                      const rows = ids.map((id) => batch.find((b) => b.id === id)).filter((b): b is BatchRow => !!b);
+                      if (rows.length === 0) return null;
+                      return (
+                        <React.Fragment key={name}>
+                          <tr className="border-t border-neutral-700 bg-neutral-900/60">
+                            <td colSpan={6} className="px-4 py-1.5 text-neutral-300 font-semibold">{name} · {rows.filter((b) => b.ok).length}/{rows.length}</td>
+                          </tr>
+                          {rows.map((b) => (
+                            <tr key={b.id} className="border-t border-neutral-800/50">
+                              <td className="px-4 py-1.5 truncate max-w-[220px]">{b.label}</td>
+                              <td className="px-2 text-neutral-500">{b.expected}</td>
+                              <td className={`px-2 ${b.decision === "BLOCK" ? "text-rose-300" : b.decision === "ALERT" ? "text-amber-300" : b.decision === "ALLOW" ? "text-emerald-300" : "text-neutral-500"}`}>{b.decision ?? "…"}</td>
+                              <td className="px-2 text-right">{b.own === undefined ? "" : b.own === null ? "—" : b.own.toFixed(2)}</td>
+                              <td className="px-2 text-right text-neutral-400">{b.ms ?? ""}</td>
+                              <td className="px-4 text-right">{b.ok === undefined ? "" : b.ok ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">✗</span>}</td>
+                            </tr>
+                          ))}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Architecture: where a prompt goes, from start to decision — shown when Inside Jev is off */}
+          {!inside && (
+            <div className="border border-neutral-700 rounded-md bg-neutral-900/60 p-5 text-base text-neutral-300">
+              <div className="font-medium text-white mb-1">Architecture</div>
+              <p className="text-sm text-neutral-400 mb-4">Where a prompt goes, from the application to the decision.</p>
+              <div className="flex items-stretch gap-2">
+                {[
+                  { title: "AI application", body: "A user writes a prompt." },
+                  { title: "Policy server", body: "This demo. Receives the prompt and builds one yes/no question per guardrail." },
+                  { title: "Jev", body: "TypeSafe API, POST /v1/systemone. Answers every question in one call." },
+                  { title: "Policy code", body: `Compares each probability with ${TYPESAFE_THRESHOLDS.noulAction.toFixed(2)} (triggered) and ${TYPESAFE_THRESHOLDS.noulReview.toFixed(2)} (review), then applies the mode of each guardrail.` },
+                  { title: "Decision", body: "Allow, Alert or Block." },
+                ].map((step, i, all) => (
+                  <React.Fragment key={step.title}>
+                    <div className="flex-1 min-w-0 rounded-md border border-neutral-700 bg-[#0B0D11] p-3">
+                      <div className="text-sm text-white mb-1">{step.title}</div>
+                      <div className="text-sm text-neutral-400 leading-relaxed">{step.body}</div>
+                    </div>
+                    {i < all.length - 1 && <ArrowRight className="w-4 h-4 self-center shrink-0 text-neutral-500" />}
+                  </React.Fragment>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-4 mt-4 text-sm text-neutral-400">
+                <div><span className="text-neutral-200">Sent to Jev:</span> the prompt and {rules.filter((r) => r.mode !== "Ignore").length} guardrail questions, in a single request.</div>
+                <div><span className="text-neutral-200">Returned by Jev:</span> one probability per question. Jev does not make the decision.</div>
+              </div>
+            </div>
+          )}
+
+          {/* What Jev lets you configure — shown here when Inside Jev is off */}
+          {!inside && (
+          <div className="border border-neutral-700 rounded-md bg-neutral-900/60 p-5 text-base leading-relaxed text-neutral-300">
+            <div className="font-medium text-white mb-3">What can be configured in Jev</div>
+            <div className="grid grid-cols-1 2xl:grid-cols-2 gap-x-10 gap-y-4">
+              <div>
+                <div className="text-neutral-200 mb-1">Per question</div>
+                <ul className="list-disc pl-5 space-y-1 text-neutral-400">
+                  <li><span className="text-neutral-300">Type:</span> Noul (yes/no, returns a probability), Choice (one of several options), Score (a position on a scale you describe), Box (a location in an image; Jev 1.14 only).</li>
+                  <li><span className="text-neutral-300">Instructions:</span> the question, as plain text or as structured fields.</li>
+                  <li><span className="text-neutral-300">Criteria:</span> what yes and no mean (Noul), the options (Choice), or the levels (Score).</li>
+                </ul>
+              </div>
+              <div>
+                <div className="text-neutral-200 mb-1">Per request</div>
+                <ul className="list-disc pl-5 space-y-1 text-neutral-400">
+                  <li><span className="text-neutral-300">State:</span> what Jev reads: text, JSON, or PNG and JPEG images.</li>
+                  <li><span className="text-neutral-300">Model:</span> jev-latest, jev-preview, or a fixed version such as jev-1.14.0.</li>
+                  <li><span className="text-neutral-300">Long context:</span> an optional header raises the limit to 262,000 tokens (default 64,000 per request and 32,000 per question). It is slower and less accurate.</li>
+                </ul>
+              </div>
+              <div>
+                <div className="text-neutral-200 mb-1">Per account</div>
+                <ul className="list-disc pl-5 space-y-1 text-neutral-400">
+                  <li>Rate limits, set in the TypeSafe console.</li>
+                </ul>
+              </div>
+              <div>
+                <div className="text-neutral-200 mb-1">Not configurable</div>
+                <ul className="list-disc pl-5 space-y-1 text-neutral-400">
+                  <li>The model is not trained on customer data: no fine-tuning and no LoRA. Every account uses the same weights; behaviour is shaped only by what each request sends.</li>
+                  <li>Thresholds do not exist in Jev. Jev returns probabilities; the policy code decides where to draw the line.</li>
+                </ul>
+              </div>
+            </div>
+            <div className="mt-4 text-sm text-neutral-500">Source: docs.typesafe.ai (Models and Primitives pages).</div>
+          </div>
+          )}
+
+          {/* Raw data */}
+          {result && (
+            <>
+              <Collapsible title="Request sent to POST /v1/systemone">
+                <pre className="text-[13px] font-mono text-neutral-300 overflow-auto max-h-80 bg-[#0B0D11] p-4 rounded">{JSON.stringify({ model: "jev-latest", state: result.typesafeInternals.requestPayload.state, questions: result.typesafeInternals.requestPayload.questions }, null, 2)}</pre>
+              </Collapsible>
+              <Collapsible title="Raw answers from Jev">
+                <pre className="text-[13px] font-mono text-neutral-300 overflow-auto max-h-80 bg-[#0B0D11] p-4 rounded">{JSON.stringify(result.typesafeInternals.rawAnswers, null, 2)}</pre>
+              </Collapsible>
+            </>
+          )}
+        </section>
+        {/* ── Rules with live noul bars ───────────────────────── */}
+        <section className="border border-neutral-800 rounded-lg bg-[#111318] overflow-hidden">
+          <div className="px-4 py-3 border-b border-neutral-800 flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold ">Guardrails</h2>
+              <p className="text-[13px] text-neutral-500">{inside ? "Probability that the current prompt violates each guardrail, as returned by Jev." : `Bar = P(yes) from Jev for the current prompt · tick = action threshold ${result?.typesafeInternals.thresholds.noulAction ?? 0.7} · blue = review band`}</p>
+            </div>
+            <div className="flex gap-2">
+              {(["Block", "Detect", "Ignore"] as RuleEnforcementMode[]).map((m) => (
+                <button key={m} type="button" onClick={() => applyRules(rules.map((r) => ({ ...r, mode: m })))} className="px-2 py-1.5 text-[13px] border border-neutral-700 rounded hover:bg-neutral-800 cursor-pointer">
+                  All {m === "Block" ? "Enforce" : m === "Detect" ? "Alert" : "Ignore"}
+                </button>
               ))}
             </div>
-          </section>
-        )}
-
-        {/* VIEW 1 & 2: Split Workspace or Dedicated Control Plane */}
-        {(activeNavTab === "workspace" || activeNavTab === "control-plane") && (
-          <div
-            className={`grid grid-cols-1 ${
-              activeNavTab === "workspace" ? " lg:grid-cols-12" : ""
-            } gap-6 items-start`}
-          >
-            {/* Left / Full Column: Deduplicated Guardrails Control Plane (Matching Screenshots) */}
-            <section
-              aria-label="Guardrails Control Plane"
-              className={`${
-                activeNavTab === "workspace" ? "lg:col-span-6" : "col-span-1"
-              } bg-[#111318] border border-neutral-800 rounded-lg overflow-hidden`}
-            >
-              {/* Control Plane Header */}
-              <div className="p-4 border-b border-neutral-800 flex flex-col gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-xs font-semibold tracking-wider text-neutral-400 uppercase">
-                      Guardrails ({filteredRules.length} of {rules.length} Deduplicated)
-                    </h2>
-                    <p className="text-xs text-neutral-400 mt-0.5">
-                      Toggle each guardrail: Left{" "}
-                      <strong className="text-rose-300">Enforce</strong>{" "}
-                      (block), Middle{" "}
-                      <strong className="text-amber-300">Alert</strong>{" "}
-                      (notify &amp; sanitize), or Right{" "}
-                      <strong className="text-neutral-300">Ignore</strong>{" "}
-                      (disable).
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleBulkSetMode("Block")}
-                      className="px-2.5 py-1 text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      All Enforce
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleBulkSetMode("Detect")}
-                      className="px-2.5 py-1 text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      All Alert
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleBulkSetMode("Ignore")}
-                      className="px-2.5 py-1 text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-400 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      All Ignore
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleResetDefaultRules}
-                      title="Reset to screenshot default configuration"
-                      className="px-2.5 py-1 text-xs font-medium bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 border border-neutral-800 rounded transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      <span>Reset</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Search & Category Filter Bar */}
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  <div className="relative flex-1">
-                    <Search className="w-3.5 h-3.5 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={ruleSearch}
-                      onChange={(e) => setRuleSearch(e.target.value)}
-                      placeholder="Filter guardrails (e.g. SSN, RCE, API Keys, Package)..."
-                      aria-label="Filter guardrails"
-                      className="w-full bg-[#0B0D11] border border-neutral-800 rounded pl-8 pr-3 py-1.5 text-xs text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-neutral-600"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-1 bg-[#0B0D11] p-1 rounded border border-neutral-800 overflow-x-auto">
-                    {(
-                      [
-                        { id: "all", label: "All (21)" },
-                        { id: "pii", label: "PII (6)" },
-                        { id: "credential_leak", label: "Credentials (1)" },
-                        { id: "prompt_injection", label: "Injection & System (14)" },
-                      ] as const
-                    ).map((cat) => (
-                      <button
-                        key={cat.id}
-                        type="button"
-                        onClick={() => setCategoryFilter(cat.id)}
-                        className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                          categoryFilter === cat.id
-                            ? "bg-neutral-800 text-white"
-                            : "text-neutral-400 hover:text-neutral-200"
-                        }`}
-                      >
-                        {cat.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Guardrail List Rows (Faithful to attached screenshots) */}
-              <div className="divide-y divide-neutral-800/80 max-h-[680px] overflow-y-auto">
-                {filteredRules.map((rule) => {
-                  const triggeredInfo = apiResult?.triggeredRules.find(
-                    (tr) => tr.ruleId === rule.id
-                  );
-
-                  return (
-                    <div
-                      key={rule.id}
-                      className={`px-4 py-3 flex items-center justify-between gap-4 transition-colors ${
-                        triggeredInfo
-                          ? "bg-amber-950/15 hover:bg-amber-950/25"
-                          : "hover:bg-neutral-900/50"
-                      }`}
-                    >
-                      {/* Rule Name & Optional Triggered Status */}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-neutral-100 truncate">
-                            {rule.name}
-                          </span>
-                          {triggeredInfo && (
-                            <span className="text-[11px] font-mono text-amber-400 shrink-0">
-                              · Triggered ({triggeredInfo.actionTaken})
-                            </span>
-                          )}
-                        </div>
-                        {rule.customPatternDescription && (
-                          <p className="text-[11px] text-neutral-500 truncate mt-0.5">
-                            {rule.customPatternDescription}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Right Controls: [Test] | [Edit] | [High Icon + High] | [□□■□□] | [3-Way Toggle: Enforce | Alert | Ignore] */}
-                      <div className="flex items-center gap-3 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleTestSingleRule(rule)}
-                          title={`Load and evaluate test prompt for ${rule.name}`}
-                          className="px-2 py-0.5 text-[11px] font-medium text-emerald-300 hover:text-emerald-200 bg-emerald-950/40 hover:bg-emerald-950/70 border border-emerald-800/60 rounded transition-colors cursor-pointer"
-                        >
-                          Test
-                        </button>
-
-                        {rule.editable && (
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEditModal(rule)}
-                            className="text-xs text-neutral-300 hover:text-white underline underline-offset-4 cursor-pointer"
-                          >
-                            Edit
-                          </button>
-                        )}
-
-                        <div className="hidden sm:flex items-center gap-1.5 text-xs text-neutral-200 w-14">
-                          <HighSeverityStackIcon />
-                          <span>{rule.severity}</span>
-                        </div>
-
-                        <div className="w-11 hidden xl:flex justify-center">
-                          {rule.hasSensitivityDots ? (
-                            <SensitivityDotsIndicator />
-                          ) : null}
-                        </div>
-
-                        {/* 3-State Segmented Toggle: Left (Enforce) | Middle (Alert) | Right (Ignore) */}
-                        <div
-                          role="group"
-                          aria-label={`${rule.name} enforcement toggle`}
-                          className="inline-flex items-center bg-[#0B0D11] border border-neutral-800 rounded-md p-0.5"
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleRuleModeChange(rule.id, "Block")
-                            }
-                            aria-pressed={rule.mode === "Block"}
-                            className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                              rule.mode === "Block"
-                                ? "bg-rose-600 text-white shadow-xs"
-                                : "text-neutral-400 hover:text-neutral-200"
-                            }`}
-                          >
-                            Enforce
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleRuleModeChange(rule.id, "Detect")
-                            }
-                            aria-pressed={rule.mode === "Detect"}
-                            className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                              rule.mode === "Detect"
-                                ? "bg-amber-500 text-neutral-950 font-semibold shadow-xs"
-                                : "text-neutral-400 hover:text-neutral-200"
-                            }`}
-                          >
-                            Alert
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleRuleModeChange(rule.id, "Ignore")
-                            }
-                            aria-pressed={rule.mode === "Ignore"}
-                            className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                              rule.mode === "Ignore"
-                                ? "bg-neutral-700 text-neutral-100 shadow-xs"
-                                : "text-neutral-500 hover:text-neutral-300"
-                            }`}
-                          >
-                            Ignore
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            {/* Right Column: Custom Prompt Textarea, Preset Library, & Sanitized Output */}
-            {(activeNavTab === "workspace" ||
-              activeNavTab === "control-plane") && (
-              <section
-                aria-label="Prompt Ingestion and Output Sanitization Playground"
-                className={`${
-                  activeNavTab === "workspace" ? "lg:col-span-6" : "col-span-1"
-                } flex flex-col gap-5`}
-              >
-                {/* Dedicated Custom Prompt Tester Card */}
-                <div className="bg-[#111318] border border-emerald-500/40 rounded-lg p-4 flex flex-col gap-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <label
-                        htmlFor="custom-prompt-textarea"
-                        className="text-xs font-semibold uppercase tracking-wider text-emerald-400 block"
-                      >
-                        Custom Prompt Tester (Write or Paste Any Prompt)
-                      </label>
-                      <p className="text-xs text-neutral-400 mt-0.5">
-                        Test your own custom prompt directly against all active
-                        Control Plane guardrails and{" "}
-                        <code className="font-mono">jev-latest</code>.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {customPromptInput && (
-                        <button
-                          type="button"
-                          onClick={() => setCustomPromptInput("")}
-                          className="px-2.5 py-1 text-xs text-neutral-400 hover:text-white bg-neutral-900 border border-neutral-800 rounded cursor-pointer"
-                        >
-                          Clear
-                        </button>
-                      )}
-                      <span className="text-xs text-neutral-400 font-mono tabular-nums">
-                        {customPromptInput.length} chars
-                      </span>
-                    </div>
-                  </div>
-
-                  <textarea
-                    id="custom-prompt-textarea"
-                    rows={3}
-                    value={customPromptInput}
-                    onChange={(e) => setCustomPromptInput(e.target.value)}
-                    placeholder="Type or paste any custom prompt here (e.g. a custom jailbreak attempt, a secret token, PII, or a benign question)..."
-                    className="w-full bg-[#0B0D11] border border-neutral-700 rounded-md p-3 text-sm font-mono text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-emerald-400 resize-y"
-                  />
-
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 flex-1">
-                      <input
-                        type="text"
-                        value={customPromptLabel}
-                        onChange={(e) => setCustomPromptLabel(e.target.value)}
-                        placeholder="Optional label to save as preset..."
-                        aria-label="Custom preset label"
-                        className="flex-1 bg-[#0B0D11] border border-neutral-800 rounded px-2.5 py-1.5 text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-neutral-600"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleSaveCustomPreset}
-                        disabled={!customPromptInput.trim()}
-                        className="px-3 py-1.5 text-xs font-medium bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-200 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                      >
-                        Save Preset
-                      </button>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleTestCustomPrompt}
-                      disabled={isEvaluating || !customPromptInput.trim()}
-                      className="px-4 py-1.5 text-xs font-semibold text-neutral-950 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-40 rounded transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>
-                        {isEvaluating
-                          ? "Evaluating..."
-                          : "Test Custom Prompt"}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Preset Prompt Library (21 Guardrail Prompts + 4 Safe/Negative Fixtures + Custom Saved) */}
-                <div className="bg-[#111318] border border-neutral-800 rounded-lg p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-                    <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
-                      Preset Test Prompts (1 per Guardrail Rule + Safe + Custom)
-                    </h2>
-                    <div className="flex items-center gap-1 bg-[#0B0D11] p-1 rounded border border-neutral-800 overflow-x-auto">
-                      {(
-                        [
-                          {
-                            id: "all",
-                            label: `All (${
-                              PRESET_PROMPTS.length + customPresets.length
-                            })`,
-                          },
-                          { id: "1. PII Guardrails (6)", label: "PII (6)" },
-                          {
-                            id: "2. Credentials & Secrets (1)",
-                            label: "Credentials (1)",
-                          },
-                          {
-                            id: "3. Injection, Execution & Policy (14)",
-                            label: "Injection & System (14)",
-                          },
-                          {
-                            id: "4. Safe & Negative Fixtures (4)",
-                            label: "Safe & Custom",
-                          },
-                        ] as const
-                      ).map((grp) => (
-                        <button
-                          key={grp.id}
-                          type="button"
-                          onClick={() => setPresetGroupFilter(grp.id)}
-                          className={`px-2 py-0.5 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                            presetGroupFilter === grp.id
-                              ? "bg-neutral-800 text-white"
-                              : "text-neutral-400 hover:text-neutral-200"
-                          }`}
-                        >
-                          {grp.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
-                    {[...customPresets, ...PRESET_PROMPTS]
-                      .filter(
-                        (p) =>
-                          presetGroupFilter === "all" ||
-                          p.group === presetGroupFilter
-                      )
-                      .map((preset) => {
-                        const isSelected = selectedPresetId === preset.id;
-                        return (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            onClick={() => handleSelectPreset(preset)}
-                            className={`text-left p-2.5 rounded border transition-colors cursor-pointer flex flex-col justify-between ${
-                              isSelected
-                                ? "bg-neutral-800/90 border-emerald-500/80 text-white"
-                                : "bg-[#0B0D11] border-neutral-800/90 text-neutral-300 hover:border-neutral-700"
-                            }`}
-                          >
-                            <div className="text-[11px] text-neutral-400 flex items-center justify-between gap-1">
-                              <span className="truncate">
-                                {preset.badge === "Custom"
-                                  ? "Custom User Prompt"
-                                  : preset.group}
-                              </span>
-                            </div>
-                            <div className="text-xs font-medium text-neutral-100 mt-1 line-clamp-1">
-                              {preset.label}
-                            </div>
-                            <div className="text-[11px] text-neutral-500 mt-0.5 line-clamp-1 font-mono">
-                              {preset.prompt}
-                            </div>
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-
-                {/* Active Prompt Ingestion Payload Box */}
-                <div className="bg-[#111318] border border-neutral-800 rounded-lg p-4 flex flex-col gap-3">
-                  <div className="flex items-center justify-between">
-                    <label
-                      htmlFor="prompt-ingestion-textarea"
-                      className="text-xs font-semibold uppercase tracking-wider text-neutral-300"
-                    >
-                      Active Ingestion Payload (Editable)
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPromptInput("")}
-                        className="text-xs text-neutral-400 hover:text-white cursor-pointer"
-                      >
-                        Clear
-                      </button>
-                      <span className="text-xs text-neutral-400 font-mono">
-                        {promptInput.length} chars
-                      </span>
-                    </div>
-                  </div>
-
-                  <textarea
-                    id="prompt-ingestion-textarea"
-                    rows={4}
-                    value={promptInput}
-                    onChange={(e) => {
-                      setPromptInput(e.target.value);
-                      setSelectedPresetId("edited");
-                    }}
-                    placeholder="Enter a malicious prompt, secret key leak, or harmless query to test the guardrail control plane..."
-                    className="w-full bg-[#0B0D11] border border-neutral-800 rounded-md p-3 text-sm font-mono text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-emerald-500/80 resize-y"
-                  />
-
-                  {/* Instant Local Contract Audit Preview */}
-                  <div className="bg-[#0B0D11] border border-neutral-800/90 rounded px-3 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono">
-                    <span className="text-neutral-300 truncate">
-                      {liveAuditLog}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => runTypeSafeEvaluation()}
-                      disabled={isEvaluating}
-                      className="px-3.5 py-1.5 text-xs font-sans font-semibold text-neutral-950 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      {isEvaluating
-                        ? "Calling TypeSafe API..."
-                        : "Run Full TypeSafe Evaluation"}
-                    </button>
-                  </div>
-
-                  {evalError && (
-                    <div className="bg-rose-950/40 border border-rose-800 text-rose-200 rounded p-3 text-xs flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-                      <span>{evalError}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Sanitized End-User Output & Masked Verdict Card */}
-                <div className="bg-[#111318] border border-neutral-800 rounded-lg p-4 flex flex-col gap-4">
-                  <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
-                    <div>
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-300">
-                        Sanitized Output Delivered to End User
-                      </h3>
-                      <p className="text-xs text-neutral-400 mt-0.5">
-                        Raw matches are masked to first 4 chars +{" "}
-                        <code className="font-mono">****</code> before reaching
-                        logs or user output.
-                      </p>
-                    </div>
-                    {apiResult && (
-                      <span
-                        className={`text-xs font-semibold uppercase font-mono ${
-                          apiResult.effectiveVerdict.decision === "block"
-                            ? "text-rose-400"
-                            : apiResult.effectiveVerdict.decision === "redact"
-                            ? "text-amber-400"
-                            : "text-emerald-400"
-                        }`}
-                      >
-                        decision: &quot;{apiResult.effectiveVerdict.decision}&quot;
-                      </span>
-                    )}
-                  </div>
-
-                  {apiResult ? (
-                    <div className="flex flex-col gap-3">
-                      <div>
-                        <div className="text-xs text-neutral-400 mb-1">
-                          Sanitized Prompt (Post-Ingestion Redaction):
-                        </div>
-                        <pre className="bg-[#0B0D11] border border-neutral-800 rounded p-3 text-xs font-mono text-neutral-200 whitespace-pre-wrap break-words">
-                          {apiResult.sanitizedPrompt}
-                        </pre>
-                      </div>
-
-                      <div>
-                        <div className="text-xs text-neutral-400 mb-1">
-                          Final Sanitized End-User Response:
-                        </div>
-                        <div
-                          className={`rounded border p-3 text-sm whitespace-pre-wrap break-words ${
-                            apiResult.effectiveVerdict.decision === "block"
-                              ? "bg-rose-950/20 border-rose-900/60 text-rose-200 font-mono text-xs"
-                              : "bg-[#0B0D11] border-neutral-800 text-neutral-100"
-                          }`}
-                        >
-                          {apiResult.sanitizedEndUserOutput}
-                        </div>
-                      </div>
-
-                      {/* Compact TypeSafe Internals Preview inside Workspace */}
-                      <div className="pt-2 border-t border-neutral-800 flex flex-col gap-2">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-semibold text-neutral-300">
-                            TypeSafe Non-Regressive API Telemetry (
-                            <code className="font-mono text-emerald-400">
-                              {apiResult.typesafeInternals.model}
-                            </code>
-                            )
-                          </span>
-                          <span className="text-neutral-400 font-mono tabular-nums">
-                            {apiResult.typesafeInternals.decisionsLatencyMs}ms ·{" "}
-                            output_tokens:{" "}
-                            {apiResult.typesafeInternals.totalOutputTokens}
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {ruleNoulEntries.slice(0, 4).map((item) => (
-                            <div
-                              key={item.rule.id}
-                              className="bg-[#0B0D11] border border-neutral-800 rounded p-2 flex items-center justify-between text-xs"
-                            >
-                              <span className="text-neutral-300 truncate pr-2">
-                                {item.rule.name}
-                              </span>
-                              <span
-                                className={`font-mono tabular-nums shrink-0 ${
-                                  item.triggered
-                                    ? "text-amber-400 font-semibold"
-                                    : "text-neutral-400"
-                                }`}
-                              >
-                                noul={(item.noul * 100).toFixed(1)}%
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="py-8 text-center flex flex-col items-center gap-2">
-                      <Shield className="w-6 h-6 text-neutral-500" />
-                      <div className="text-sm text-neutral-300 font-medium">
-                        Ready to Validate Guardrails
-                      </div>
-                      <p className="text-xs text-neutral-500 max-w-md">
-                        Click &ldquo;Run Full TypeSafe Evaluation&rdquo; to
-                        ingest the prompt through both the deterministic
-                        TypeScript guardrail module and the live non-regressive{" "}
-                        <code className="font-mono">
-                          https://api.typesafe.ai/v1/systemone
-                        </code>{" "}
-                        (<code className="font-mono">jev-latest</code>) model
-                        API.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </section>
-            )}
           </div>
-        )}
 
-        {/* VIEW 3: Full TypeSafe Model Internals & Contract Inspector */}
-        {(activeNavTab === "internals" ||
-          (activeNavTab === "workspace" && apiResult)) && (
-          <section
-            aria-label="TypeSafe API Internals"
-            className="bg-[#111318] border border-neutral-800 rounded-lg p-5 flex flex-col gap-5"
-          >
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-neutral-800 pb-4">
-              <div>
-                <h2 className="text-base font-bold text-white">
-                  TypeSafe Non-Regressive Decision Model & Contract Internals
-                </h2>
-                <p className="text-xs text-neutral-400 mt-0.5">
-                  Live inspection of calibrated <code className="font-mono">noul</code>{" "}
-                  probabilities, <code className="font-mono">choice</code> threat
-                  routing, <code className="font-mono">score</code> rubric
-                  evaluation (<code className="font-mono">total_output_tokens = 0</code>),
-                  and strict TypeScript <code className="font-mono">GuardrailVerdict</code>{" "}
-                  discriminated unions.
-                </p>
-              </div>
-              {!apiResult && (
-                <button
-                  type="button"
-                  onClick={() => runTypeSafeEvaluation()}
-                  disabled={isEvaluating}
-                  className="px-3.5 py-2 text-xs font-semibold text-neutral-950 bg-emerald-400 hover:bg-emerald-300 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  {isEvaluating
-                    ? "Evaluating..."
-                    : "Run Evaluation to Populate Internals"}
-                </button>
-              )}
-            </div>
-
-            {apiResult ? (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Calibrated noul Probabilities per Control Plane Rule */}
-                <div className="lg:col-span-7 flex flex-col gap-4">
-                  <div className="bg-[#0B0D11] border border-neutral-800 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-300">
-                        Calibrated <code className="font-mono">noul</code>{" "}
-                        Probabilities across Active Guardrails
-                      </h3>
-                      <span className="text-xs font-mono text-neutral-400 tabular-nums">
-                        Threshold: P(true) &ge; 0.65
-                      </span>
-                    </div>
-
-                    <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
-                      {ruleNoulEntries.map(({ rule, noul, confidence, triggered }) => (
-                        <div
-                          key={rule.id}
-                          className="p-2.5 rounded border border-neutral-800/90 bg-[#111318] flex flex-col gap-1.5"
-                        >
-                          <div className="flex items-center justify-between text-xs">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium text-neutral-100">
-                                {rule.name}
-                              </span>
-                              <span className="text-neutral-500">·</span>
-                              <span className="text-neutral-400 font-mono text-[11px]">
-                                {rule.mode === "Block"
-                                  ? "Enforce"
-                                  : rule.mode === "Detect"
-                                  ? "Alert"
-                                  : "Ignore"}
-                              </span>
-                            </div>
-                            <div className="font-mono text-xs tabular-nums flex items-center gap-3">
-                              <span
-                                className={
-                                  triggered
-                                    ? "text-amber-400 font-semibold"
-                                    : "text-neutral-300"
-                                }
-                              >
-                                noul={noul.toFixed(2)}
-                              </span>
-                              <span className="text-neutral-500">
-                                conf={confidence.toFixed(2)}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="w-full h-1.5 bg-neutral-800 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full transition-all ${
-                                triggered ? "bg-rose-500" : "bg-emerald-500"
-                              }`}
-                              style={{ width: `${Math.max(2, noul * 100)}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Choice & Score Rubric Outputs */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {primaryChoiceAnswer && (
-                      <div className="bg-[#0B0D11] border border-neutral-800 rounded-lg p-4">
-                        <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-2">
-                          TypeSafe <code className="font-mono">choice</code>{" "}
-                          Threat Vector
-                        </h3>
-                        <div className="text-sm font-mono font-semibold text-emerald-400 mb-2">
-                          {primaryChoiceAnswer.choice} (conf{" "}
-                          {(primaryChoiceAnswer.confidence * 100).toFixed(1)}%)
-                        </div>
-                        <div className="space-y-1.5 text-xs font-mono">
-                          {Object.entries(
-                            primaryChoiceAnswer.probabilities
-                          ).map(([opt, prob]) => (
-                            <div
-                              key={opt}
-                              className="flex items-center justify-between text-neutral-300"
-                            >
-                              <span className="truncate pr-2">{opt}</span>
-                              <span className="tabular-nums text-neutral-400">
-                                {(prob * 100).toFixed(1)}%
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {severityScoreAnswer && (
-                      <div className="bg-[#0B0D11] border border-neutral-800 rounded-lg p-4">
-                        <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-2">
-                          TypeSafe <code className="font-mono">score</code>{" "}
-                          Severity Rubric
-                        </h3>
-                        <div className="text-sm font-mono font-semibold text-amber-400 mb-2 tabular-nums">
-                          Expected Rubric Index:{" "}
-                          {severityScoreAnswer.score.toFixed(2)} / 3.00
-                        </div>
-                        <div className="space-y-1.5 text-xs font-mono">
-                          {Object.entries(
-                            severityScoreAnswer.probabilities
-                          ).map(([idx, prob]) => (
-                            <div
-                              key={idx}
-                              className="flex items-center justify-between text-neutral-300"
-                            >
-                              <span>Level {idx}</span>
-                              <span className="tabular-nums text-neutral-400">
-                                {(prob * 100).toFixed(1)}%
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Strict TypeScript GuardrailVerdict & Shannon Entropy Inspector */}
-                <div className="lg:col-span-5 flex flex-col gap-4">
-                  <div className="bg-[#0B0D11] border border-neutral-800 rounded-lg p-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-2">
-                      Strict Discriminated Union{" "}
-                      <code className="font-mono">GuardrailVerdict</code>
-                    </h3>
-                    <pre className="text-xs font-mono text-emerald-300 bg-[#111318] border border-neutral-800 rounded p-3 overflow-x-auto">
-                      {JSON.stringify(apiResult.effectiveVerdict, null, 2)}
-                    </pre>
-                  </div>
-
-                  <div className="bg-[#0B0D11] border border-neutral-800 rounded-lg p-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-2">
-                      Shannon Entropy Token Telemetry (&ge; 4.5 bits/char over
-                      20+ chars)
-                    </h3>
-                    {apiResult.entropyAnalysis.length > 0 ? (
-                      <div className="divide-y divide-neutral-800 text-xs font-mono">
-                        {apiResult.entropyAnalysis.map((ent, idx) => (
-                          <div
-                            key={`${ent.maskedToken}-${idx}`}
-                            className="py-1.5 flex items-center justify-between"
-                          >
-                            <span className="text-neutral-200">
-                              {ent.maskedToken}{" "}
-                              <span className="text-neutral-500">
-                                ({ent.length} chars)
-                              </span>
-                            </span>
-                            <span
-                              className={`tabular-nums ${
-                                ent.exceedsThreshold
-                                  ? "text-amber-400 font-semibold"
-                                  : "text-neutral-400"
-                              }`}
-                            >
-                              {ent.shannonEntropy} bits/ch
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-neutral-500">
-                        No long candidate tokens (12+ chars) in current prompt.
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="bg-[#0B0D11] border border-neutral-800 rounded-lg p-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-2">
-                      TypeSafe Endpoint Request (
-                      <code className="font-mono text-emerald-400">
-                        {apiResult.typesafeInternals.endpoint}
-                      </code>
-                      )
-                    </h3>
-                    <pre className="text-xs font-mono text-neutral-300 bg-[#111318] border border-neutral-800 rounded p-3 max-h-48 overflow-y-auto">
-                      {JSON.stringify(
-                        apiResult.typesafeInternals.requestPayload,
-                        null,
-                        2
-                      )}
-                    </pre>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-[#0B0D11] border border-neutral-800 rounded-lg p-6">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-2">
-                  Live Local <code className="font-mono">evaluatePrompt(input, policy)</code>{" "}
-                  Preview
-                </h3>
-                <pre className="text-xs font-mono text-emerald-300 overflow-x-auto">
-                  {JSON.stringify(liveLocalVerdict, null, 2)}
-                </pre>
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* VIEW 4: Table-Driven Contract Test Suite (Positive & Negative Fixtures) */}
-        {activeNavTab === "test-suite" && (
-          <section
-            aria-label="Table-Driven Contract Test Suite"
-            className="bg-[#111318] border border-neutral-800 rounded-lg p-5 flex flex-col gap-4"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800 pb-4">
-              <div>
-                <h2 className="text-base font-bold text-white">
-                  Table-Driven Contract Fixtures (
-                  <code className="font-mono text-sm">
-                    src/guardrails/evaluator.test.ts
-                  </code>
-                  )
-                </h2>
-                <p className="text-xs text-neutral-400 mt-0.5">
-                  Verifies AWS keys, GitHub tokens, PEM headers, JWT shapes,
-                  Shannon entropy &ge; 4.5, PII redaction, and negative fixtures
-                  (UUIDv4 is not a secret, 40-char Git SHA is not a key).
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={fetchTestSuite}
-                disabled={isLoadingTests}
-                className="px-3.5 py-1.5 text-xs font-semibold bg-emerald-400 hover:bg-emerald-300 text-neutral-950 rounded transition-colors cursor-pointer"
-              >
-                {isLoadingTests ? "Running Fixtures..." : "Re-Run Test Suite"}
-              </button>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
+          {inside ? (
+            <div className="p-4 xl:max-h-[calc(100vh-180px)] xl:overflow-y-auto">
+              <table className="w-full border-collapse text-[15px]">
                 <thead>
-                  <tr className="border-b border-neutral-800 text-neutral-400">
-                    <th className="py-2.5 px-3 font-medium">Status</th>
-                    <th className="py-2.5 px-3 font-medium">Fixture Case</th>
-                    <th className="py-2.5 px-3 font-medium">Expected</th>
-                    <th className="py-2.5 px-3 font-medium">Actual Verdict</th>
-                    <th className="py-2.5 px-3 font-medium">
-                      Raw Masking (<code className="font-mono">XXXX****</code>)
-                    </th>
-                    <th className="py-2.5 px-3 font-medium text-right">
-                      Latency
-                    </th>
+                  <tr>
+                    <th className="border border-neutral-600 px-4 py-3 font-medium text-neutral-200 text-center w-56">Guardrail</th>
+                    <th className="border border-neutral-600 px-4 py-3 font-medium text-neutral-200 text-center">Question sent to Jev</th>
+                    <th className="border border-neutral-600 px-4 py-3 font-medium text-neutral-200 text-center w-32">Probability</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-neutral-800/80">
-                  {testSuiteData?.results.map((item) => (
-                    <tr key={item.id} className="hover:bg-neutral-900/50">
-                      <td className="py-2.5 px-3 font-mono">
-                        {item.passed ? (
-                          <span className="text-emerald-400 font-semibold">
-                            PASS
-                          </span>
-                        ) : (
-                          <span className="text-rose-400 font-semibold">
-                            FAIL
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <div className="font-medium text-neutral-100">
-                          {item.name}
-                        </div>
-                        <div className="text-neutral-400 font-mono text-[11px] mt-0.5 truncate max-w-md">
-                          {item.auditLog}
-                        </div>
-                      </td>
-                      <td className="py-2.5 px-3 font-mono uppercase text-neutral-300">
-                        {item.expectedDecision}
-                      </td>
-                      <td className="py-2.5 px-3 font-mono uppercase text-emerald-400">
-                        {item.actualVerdict.decision}
-                      </td>
-                      <td className="py-2.5 px-3 font-mono text-neutral-300">
-                        {item.rawMaskingVerified
-                          ? "Verified (Zero raw leak)"
-                          : "Failed"}
-                      </td>
-                      <td className="py-2.5 px-3 font-mono text-right text-neutral-400 tabular-nums">
-                        {item.durationMs}ms
-                      </td>
-                    </tr>
+                <tbody>
+                  {GROUPS.map((g) => (
+                    <React.Fragment key={g}>
+                      <tr>
+                        <td colSpan={3} className="border border-neutral-600 px-4 py-2 text-sm font-semibold text-neutral-400 bg-[#0B0D11]">{g}</td>
+                      </tr>
+                      {rules.filter((r) => r.group === g).map((rule) => {
+                        const p = rule.mode === "Ignore" ? null : noulOf(rule.id);
+                        const th = result?.typesafeInternals.thresholds;
+                        const tone = p === null || !th ? "text-neutral-500" : p >= th.noulAction ? "text-rose-300" : p >= th.noulReview ? "text-sky-300" : "text-neutral-300";
+                        return (
+                          <tr key={rule.id}>
+                            <td className={`border border-neutral-600 px-4 py-3 align-top ${rule.mode === "Ignore" ? "text-neutral-500" : "text-neutral-100"}`}>{rule.name}</td>
+                            <td className="border border-neutral-600 px-4 py-3 align-top text-neutral-300 leading-relaxed">{rule.typesafeQuestion.instructions}</td>
+                            <td className={`border border-neutral-600 px-4 py-3 align-top text-right font-mono text-lg ${tone}`}>{p === null ? "—" : `${Math.round(p * 100)}%`}</td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>
             </div>
-          </section>
-        )}
+          ) : (
+          <div className="xl:max-h-[calc(100vh-180px)] xl:overflow-y-auto">
+            {GROUPS.map((g) => (
+              <div key={g}>
+                <div className="px-4 py-1.5 text-xs font-semibold text-neutral-500 bg-[#0B0D11] border-y border-neutral-800/70">{g} · {rules.filter((r) => r.group === g).length}</div>
+                {rules.filter((r) => r.group === g).map((rule) => {
+                  const hit = result?.triggeredRules.find((t) => t.ruleId === rule.id);
+                  const p = rule.mode === "Ignore" ? null : noulOf(rule.id);
+                  return (
+                    <div key={rule.id} className={`px-4 py-2 flex items-center gap-3 border-b border-neutral-800/50 ${hit ? (hit.actionTaken === "Enforced (Blocked)" ? "bg-rose-950/25" : hit.actionTaken === "Flagged for Review" ? "bg-sky-950/20" : "bg-amber-950/20") : ""}`}>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-base font-medium truncate ${rule.mode === "Ignore" ? "text-neutral-500" : ""}`}>{rule.name}</span>
+                          {hit && <span className={`text-xs font-mono px-1.5 py-0.5 rounded ${hit.actionTaken === "Enforced (Blocked)" ? "bg-rose-600/30 text-rose-300" : hit.actionTaken === "Flagged for Review" ? "bg-sky-600/30 text-sky-300" : "bg-amber-600/30 text-amber-300"}`}>{hit.actionTaken === "Enforced (Blocked)" ? "BLOCKED" : hit.actionTaken === "Flagged for Review" ? "REVIEW" : "ALERT"}{hit.escalatedBySeverity ? " ↑sev" : ""}</span>}
+                        </div>
+                        <p className="text-[13px] text-neutral-500 truncate" title={rule.typesafeQuestion.instructions}>{rule.typesafeQuestion.instructions}</p>
+                      </div>
+                      <NoulBar p={p} thresholds={result?.typesafeInternals.thresholds} />
+                      <button type="button" onClick={() => testRule(rule)} disabled={busy} className="px-2 py-1.5 text-[13px] font-medium border border-emerald-700 text-emerald-300 rounded hover:bg-emerald-900/40 cursor-pointer disabled:opacity-50 shrink-0">Test</button>
+                      <button type="button" onClick={() => openEdit(rule)} className="text-[13px] text-neutral-400 hover:text-white underline cursor-pointer shrink-0">Edit</button>
+                      <ModeToggle mode={rule.mode} onChange={(m) => applyRules(rules.map((r) => (r.id === rule.id ? { ...r, mode: m } : r)))} />
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+          )}
+        </section>
+
       </main>
 
-      {/* Edit Custom Guardrail Policy Modal */}
-      {editingRule && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="edit-rule-modal-title"
-          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
-        >
-          <div className="bg-[#12151E] border border-neutral-800 rounded-lg max-w-lg w-full p-5 flex flex-col gap-4">
-            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
-              <h3
-                id="edit-rule-modal-title"
-                className="text-sm font-semibold text-white"
-              >
-                Edit Guardrail Policy: {editingRule.name}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setEditingRule(null)}
-                aria-label="Close modal"
-                className="text-neutral-400 hover:text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+      {/* Edit modal */}
+      {editing && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-20 p-4" onClick={() => setEditing(null)}>
+          <form onSubmit={saveEdit} onClick={(e) => e.stopPropagation()} className="bg-[#111318] border border-neutral-700 rounded-lg w-full max-w-2xl p-5 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold">{editing.name} — the question is the configuration</h3>
+              <button type="button" onClick={() => setEditing(null)} className="text-neutral-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
             </div>
-
-            <form onSubmit={handleSaveRuleEdit} className="flex flex-col gap-4">
-              <div>
-                <label
-                  htmlFor="custom-policy-description"
-                  className="block text-xs font-medium text-neutral-300 mb-1.5"
-                >
-                  Guardrail Rule Specification
-                </label>
-                <textarea
-                  id="custom-policy-description"
-                  rows={2}
-                  value={editPatternDraft}
-                  onChange={(e) => setEditPatternDraft(e.target.value)}
-                  className="w-full bg-[#0B0D11] border border-neutral-800 rounded p-2.5 text-xs font-mono text-neutral-100 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="custom-typesafe-question"
-                  className="block text-xs font-medium text-neutral-300 mb-1.5"
-                >
-                  TypeSafe System One (<code className="font-mono">noul</code>)
-                  Question Instructions
-                </label>
-                <textarea
-                  id="custom-typesafe-question"
-                  rows={2}
-                  value={editQuestionDraft}
-                  onChange={(e) => setEditQuestionDraft(e.target.value)}
-                  className="w-full bg-[#0B0D11] border border-neutral-800 rounded p-2.5 text-xs font-mono text-neutral-100 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="custom-sample-prompt"
-                  className="block text-xs font-medium text-neutral-300 mb-1.5"
-                >
-                  Dedicated Rule Test Prompt
-                </label>
-                <textarea
-                  id="custom-sample-prompt"
-                  rows={2}
-                  value={editSamplePromptDraft}
-                  onChange={(e) => setEditSamplePromptDraft(e.target.value)}
-                  className="w-full bg-[#0B0D11] border border-neutral-800 rounded p-2.5 text-xs font-mono text-neutral-100 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setEditingRule(null)}
-                  className="px-3 py-1.5 text-xs font-medium text-neutral-300 hover:text-white bg-neutral-800 rounded cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-3.5 py-1.5 text-xs font-semibold text-neutral-950 bg-emerald-400 hover:bg-emerald-300 rounded cursor-pointer"
-                >
-                  Save Guardrail Rule
-                </button>
-              </div>
-            </form>
-          </div>
+            {([
+              ["ask", "Question (one yes/no)", 2],
+              ["yes", "criteria.true — what counts as yes", 2],
+              ["no", "criteria.false — what counts as no", 2],
+              ["examples", "Examples of a yes (one per line)", 3],
+              ["sample", "Test prompt", 2],
+            ] as const).map(([k, label, rows]) => (
+              <label key={k} className="text-[13px] text-neutral-400 flex flex-col gap-1">
+                {label}
+                <textarea rows={rows} value={draft[k]} onChange={(e) => setDraft({ ...draft, [k]: e.target.value })} className="bg-[#0B0D11] border border-neutral-700 rounded p-2 font-mono text-sm text-neutral-100 focus:outline-none focus:border-emerald-600" />
+              </label>
+            ))}
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" onClick={() => setEditing(null)} className="px-3 py-1.5 text-sm border border-neutral-700 rounded cursor-pointer">Cancel</button>
+              <button type="submit" className="px-3 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 rounded font-semibold cursor-pointer">Save & re-evaluate</button>
+            </div>
+          </form>
         </div>
       )}
     </div>

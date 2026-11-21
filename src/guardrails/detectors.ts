@@ -487,5 +487,5 @@ export function sanitizeWithFindings(
 }
 
 export function getCategoryOrder(): ReadonlyArray<GuardrailCategory> {
-  return ["prompt_injection", "secret_key", "credential_leak", "pii"];
+  return ["prompt_injection", "secret_key", "credential_leak", "pii", "confidential_data"];
 }

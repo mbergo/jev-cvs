@@ -4,7 +4,8 @@ export type GuardrailCategory =
   | "credential_leak"
   | "pii"
   | "secret_key"
-  | "prompt_injection";
+  | "prompt_injection"
+  | "confidential_data";
 
 export interface Finding {
   category: GuardrailCategory;
@@ -33,6 +34,7 @@ export const GuardrailCategorySchema = z.enum([
   "pii",
   "secret_key",
   "prompt_injection",
+  "confidential_data",
 ]);
 
 export const CategoryActionSchema = z.enum(["allow", "block", "redact"]);
@@ -52,6 +54,7 @@ export const GuardrailPolicySchema = z.object({
     pii: CategoryPolicyConfigSchema,
     secret_key: CategoryPolicyConfigSchema,
     prompt_injection: CategoryPolicyConfigSchema,
+    confidential_data: CategoryPolicyConfigSchema,
   }),
 });
 
@@ -74,5 +77,6 @@ export const DEFAULT_GUARDRAIL_POLICY: GuardrailPolicy = parseGuardrailPolicy({
     pii: { action: "redact", minConfidence: 0.75 },
     secret_key: { action: "block", minConfidence: 0.8 },
     prompt_injection: { action: "block", minConfidence: 0.75 },
+    confidential_data: { action: "block", minConfidence: 0.75 },
   },
 });
