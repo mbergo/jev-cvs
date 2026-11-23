@@ -45,14 +45,14 @@ function Json({ value }: { value: unknown }) {
       if (at > last) out.push(text.slice(last, at));
       if (m[1] !== undefined) {
         if (m[2] !== undefined) {
-          out.push(<span key={k++} className="text-[#8fb4ff]">{m[1]}</span>, m[2]);
+          out.push(<span key={k++} className="text-term-key">{m[1]}</span>, m[2]);
         } else {
-          out.push(<span key={k++} className="text-[#e9c27a]">{m[1]}</span>);
+          out.push(<span key={k++} className="text-term-string">{m[1]}</span>);
         }
       } else if (m[3] !== undefined) {
-        out.push(<span key={k++} className="text-[#ff9a85]">{m[3]}</span>);
+        out.push(<span key={k++} className="text-term-literal">{m[3]}</span>);
       } else if (m[4] !== undefined) {
-        out.push(<span key={k++} className="text-[#c7adff]">{m[4]}</span>);
+        out.push(<span key={k++} className="text-term-number">{m[4]}</span>);
       }
       last = at + m[0].length;
     }
@@ -60,7 +60,7 @@ function Json({ value }: { value: unknown }) {
     return out;
   }, [value]);
   return (
-    <pre className="font-mono text-[12.5px] leading-[1.45] text-[#c9ced6] whitespace-pre-wrap" style={{ overflowWrap: "anywhere" }}>
+    <pre className="font-mono text-[12.5px] leading-[1.45] text-term-ink whitespace-pre-wrap" style={{ overflowWrap: "anywhere" }}>
       {nodes}
     </pre>
   );
@@ -134,10 +134,10 @@ export default function LiveWire({ entry }: { entry: WireEntry | null }) {
 
       {/* Body: the payload, one side at a time */}
       <div ref={bodyRef} className="max-h-[520px] overflow-auto bg-term px-6 py-5">
-        {!entry && <div className="text-sm text-[#8a9099]">The request body and the reply will appear here, exactly as sent on the wire.</div>}
+        {!entry && <div className="text-sm text-term-muted">The request body and the reply will appear here, exactly as sent on the wire.</div>}
         {entry && side === "TX" && <Json value={entry.request} />}
-        {entry && side === "RX" && pending && <div className="text-sm text-[#8a9099] animate-pulse">…</div>}
-        {entry && side === "RX" && !pending && entry.error && entry.response === undefined && <div className="font-mono text-sm text-[#ff9a85]">{entry.error}</div>}
+        {entry && side === "RX" && pending && <div className="text-sm text-term-muted animate-pulse">…</div>}
+        {entry && side === "RX" && !pending && entry.error && entry.response === undefined && <div className="font-mono text-sm text-term-err">{entry.error}</div>}
         {entry && side === "RX" && !pending && entry.response !== undefined && <Json value={entry.response} />}
       </div>
     </div>

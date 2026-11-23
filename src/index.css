@@ -46,6 +46,12 @@
 
   --color-term: #17191d;
   --color-term-ink: #d5d9df;
+  --color-term-muted: #8a9099;
+  --color-term-key: #8fb4ff;
+  --color-term-string: #e9c27a;
+  --color-term-literal: #c7adff;
+  --color-term-number: #7fd6b0;
+  --color-term-err: #ff9a85;
   --color-term-line: #2b2f36;
 }
 
