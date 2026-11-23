@@ -124,7 +124,7 @@ function ModeToggle({ mode, onChange }: { mode: RuleEnforcementMode; onChange: (
 function Switch({ on, onToggle, label, tone }: { on: boolean; onToggle: () => void; label: string; tone: string }) {
   return (
     <button type="button" role="switch" aria-checked={on} onClick={onToggle} className="flex items-center gap-2.5 text-sm text-ink-2 hover:text-ink cursor-pointer select-none">
-      <span className={`relative w-9 h-5 rounded-full transition-colors ${on ? tone : "bg-line-strong"}`}>
+      <span className={`relative w-9 h-5 rounded-full transition-colors ${on ? tone : "bg-ink-3"}`}>
         <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${on ? "left-[1.125rem]" : "left-0.5"}`} />
       </span>
       {label}
@@ -401,7 +401,7 @@ export default function App() {
                   {verdictStyle.icon}
                   <div>
                     <div className="eyebrow mb-1">02 — Decision</div>
-                    <div className={`font-display text-6xl font-semibold tracking-[-0.03em] leading-none ${verdictStyle.word}`}>{VERDICT_LABEL[verdict!]}</div>
+                    <div className={`font-display text-4xl sm:text-6xl font-semibold tracking-[-0.03em] leading-none ${verdictStyle.word}`}>{VERDICT_LABEL[verdict!]}</div>
                   </div>
                 </div>
                 <div className="text-right text-sm text-ink-2">

@@ -94,7 +94,7 @@ export default function LiveWire({ entry }: { entry: WireEntry | null }) {
         <div className="flex rounded-[3px] border border-ink overflow-hidden shrink-0">
           {(["TX", "RX"] as Side[]).map((s) => (
             <button key={s} type="button" onClick={() => setSide(s)}
-              className={`px-3 py-1 text-[13px] font-mono font-semibold cursor-pointer ${side === s ? (s === "TX" ? "bg-ink text-canvas" : "bg-review text-white") : "bg-surface text-ink-2 hover:text-ink"}`}>
+              className={`px-3 py-1 text-[13px] font-mono font-semibold cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-current ${side === s ? (s === "TX" ? "bg-ink text-canvas" : "bg-review text-white") : "bg-surface text-ink-2 hover:text-ink"}`}>
               {s === "TX" ? "→ TX" : "← RX"}
             </button>
           ))}
