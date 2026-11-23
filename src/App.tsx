@@ -153,8 +153,8 @@ function ProbabilityRows({ title, note, rows }: { title: string; note?: string; 
       </div>
       <div className="space-y-2.5">
         {rows.map((r) => (
-          <div key={r.key} className="grid grid-cols-[minmax(0,11rem)_1fr_2.75rem] items-center gap-3 text-sm">
-            <span className={`truncate ${r.strong ? "text-ink font-medium" : "text-ink-3"}`} title={r.label}>{r.label}</span>
+          <div key={r.key} className="grid grid-cols-[minmax(0,13rem)_1fr_2.75rem] items-center gap-3 text-sm">
+            <span className={`leading-snug ${r.strong ? "text-ink font-medium" : "text-ink-3"}`}>{r.label}</span>
             <div className="h-1.5 bg-canvas/70 rounded-full overflow-hidden"><div className={`h-full rounded-full ${r.color}`} style={{ width: `${r.v * 100}%` }} /></div>
             <span className="text-right font-mono tabular-nums text-ink-2">{(r.v * 100).toFixed(0)}%</span>
           </div>
@@ -624,7 +624,7 @@ export default function App() {
                             <span className={`text-[15px] font-semibold leading-snug ${rule.mode === "Ignore" ? "text-ink-3" : "text-ink"}`}>{rule.name}</span>
                             {hit && <span className={`text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full ring-1 ${ACTION_TONE[hit.actionTaken].chip}`}>{ACTION_TONE[hit.actionTaken].label}{hit.escalatedBySeverity ? " ↑ sev" : ""}</span>}
                           </div>
-                          <p className="mt-1 text-sm leading-relaxed text-ink-3 line-clamp-2" title={rule.typesafeQuestion.instructions}>{rule.typesafeQuestion.instructions}</p>
+                          <p className="mt-1 text-sm leading-relaxed text-ink-3">{rule.typesafeQuestion.instructions}</p>
                         </div>
                       </div>
                       <div className="mt-3 flex items-center gap-3">
