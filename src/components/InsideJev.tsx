@@ -74,7 +74,7 @@ function FlowStep({ n, title, explain, last, children }: {
 }
 
 const Code = ({ children }: { children: string }) => (
-  <pre className="font-mono text-[15px] leading-relaxed whitespace-pre-wrap break-words rounded-[4px] border border-term-line bg-term p-5 text-[#d5d9df]">{children}</pre>
+  <pre className="font-mono text-[15px] leading-relaxed whitespace-pre-wrap break-words rounded-[4px] border border-term-line bg-term p-5 text-term-ink">{children}</pre>
 );
 
 const SUMMARY_LABEL: Record<string, string> = { primary_threat_vector: "Threat vector", threat_severity_rubric: "Severity" };
@@ -249,7 +249,7 @@ ${guardrailAnswers.slice(0, 3).map((g) => `    "${g.id}": { "type": "noul", "nou
                 {span.indent && <span className="text-ink-3">└ </span>}
                 {span.label} <span className="text-ink-3">{span.op}</span>
               </div>
-              <div className="relative h-3 rounded bg-raised">
+              <div className="relative h-3 rounded bg-line">
                 <motion.div
                   className={`absolute inset-y-0 rounded ${span.color}`}
                   style={{ left: pct(span.start) }}

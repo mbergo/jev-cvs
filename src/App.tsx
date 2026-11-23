@@ -165,10 +165,10 @@ function ProbabilityRows({ title, note, rows }: { title: string; note?: string; 
 }
 
 const ACTION_TONE: Record<TriggeredRule["actionTaken"], { chip: string; label: string }> = {
-  "Enforced (Blocked)": { chip: "bg-block/15 text-block ring-block/30", label: "Blocked" },
-  "Alerted & Sanitized": { chip: "bg-alert/15 text-alert ring-alert/30", label: "Alert" },
-  "Flagged for Review": { chip: "bg-review/15 text-review ring-review/30", label: "Review" },
-  "Ignored (Bypassed)": { chip: "bg-ink-3/15 text-ink-3 ring-ink-3/30", label: "Ignored" },
+  "Enforced (Blocked)": { chip: "bg-block/15 text-ink ring-block/40", label: "Blocked" },
+  "Alerted & Sanitized": { chip: "bg-alert/15 text-ink ring-alert/40", label: "Alert" },
+  "Flagged for Review": { chip: "bg-review/15 text-ink ring-review/40", label: "Review" },
+  "Ignored (Bypassed)": { chip: "bg-ink-3/15 text-ink-2 ring-ink-3/40", label: "Ignored" },
 };
 
 // ─── App ───────────────────────────────────────────────────────────────────
@@ -329,11 +329,11 @@ export default function App() {
           </div>
           <div className="hidden lg:flex items-center gap-3 text-sm whitespace-nowrap">
             <span className="flex items-center gap-2 px-3 py-1.5 rounded-[3px] border border-canvas/20 text-canvas/90">
-              <span className={`w-2 h-2 rounded-full ${status?.connected ? "bg-[#5fd39a]" : status ? "bg-[#ff8f78]" : "bg-canvas/50 animate-pulse"}`} />
+              <span className={`w-2 h-2 rounded-full ${status?.connected ? "bg-allow-on-ink" : status ? "bg-block-on-ink" : "bg-canvas/50 animate-pulse"}`} />
               {status ? (status.connected ? <>api.typesafe.ai <span className="font-mono text-[13px] text-canvas/60">{result?.typesafeInternals.model ?? status.model}</span></> : `Offline: ${status.error}`) : "Connecting…"}
             </span>
             <span className="px-3 py-1.5 rounded-[3px] border border-canvas/20 text-canvas/75 font-mono text-[13px]">
-              <span className="text-[#ff9a85] font-semibold">{counts.block}</span> enforce · <span className="text-[#f0b55c] font-semibold">{counts.alert}</span> alert · {counts.ignore} ignore
+              <span className="text-block-on-ink font-semibold">{counts.block}</span> enforce · <span className="text-alert-on-ink font-semibold">{counts.alert}</span> alert · {counts.ignore} ignore
             </span>
             <button type="button" onClick={() => applyRules(INITIAL_CONTROL_PLANE_RULES)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-[3px] text-canvas/70 hover:text-canvas hover:bg-canvas/10 cursor-pointer"><RotateCcw className="w-3.5 h-3.5" />Reset</button>
           </div>
@@ -483,7 +483,7 @@ export default function App() {
                       return (
                         <React.Fragment key={name}>
                           <tr className="border-t border-line bg-raised/60">
-                            <td colSpan={6} className="px-6 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-ink-3">{name} <span className="ml-1 normal-case tracking-normal font-mono">{rows.filter((b) => b.ok).length}/{rows.length}</span></td>
+                            <td colSpan={6} className="px-6 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-ink-2">{name} <span className="ml-1 normal-case tracking-normal font-mono">{rows.filter((b) => b.ok).length}/{rows.length}</span></td>
                           </tr>
                           {rows.map((b) => (
                             <tr key={b.id} className="border-t border-line/60 hover:bg-raised/40">
@@ -544,10 +544,10 @@ export default function App() {
           {result && (
             <div className="flex flex-col gap-3">
               <Collapsible title="Request sent to POST /v1/systemone">
-                <pre className="text-[13px] leading-relaxed font-mono text-[#d5d9df] overflow-auto max-h-96 bg-term p-5 rounded-[4px] border border-term-line">{JSON.stringify({ model: result.typesafeInternals.requestPayload.model ?? "jev-latest", state: result.typesafeInternals.requestPayload.state, questions: result.typesafeInternals.requestPayload.questions }, null, 2)}</pre>
+                <pre className="text-[13px] leading-relaxed font-mono text-term-ink overflow-auto max-h-96 bg-term p-5 rounded-[4px] border border-term-line">{JSON.stringify({ model: result.typesafeInternals.requestPayload.model ?? "jev-latest", state: result.typesafeInternals.requestPayload.state, questions: result.typesafeInternals.requestPayload.questions }, null, 2)}</pre>
               </Collapsible>
               <Collapsible title="Raw answers from Jev">
-                <pre className="text-[13px] leading-relaxed font-mono text-[#d5d9df] overflow-auto max-h-96 bg-term p-5 rounded-[4px] border border-term-line">{JSON.stringify(result.typesafeInternals.rawAnswers, null, 2)}</pre>
+                <pre className="text-[13px] leading-relaxed font-mono text-term-ink overflow-auto max-h-96 bg-term p-5 rounded-[4px] border border-term-line">{JSON.stringify(result.typesafeInternals.rawAnswers, null, 2)}</pre>
               </Collapsible>
             </div>
           )}
@@ -590,7 +590,7 @@ export default function App() {
                   {GROUPS.map((g) => (
                     <React.Fragment key={g}>
                       <tr className="border-t border-line bg-raised/60">
-                        <td colSpan={3} className="px-6 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-ink-3">{g}</td>
+                        <td colSpan={3} className="px-6 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-ink-2">{g}</td>
                       </tr>
                       {rules.filter((r) => r.group === g).map((rule) => {
                         const p = rule.mode === "Ignore" ? null : noulOf(rule.id);
@@ -613,7 +613,7 @@ export default function App() {
           <div className="xl:max-h-[calc(100vh-280px)] xl:overflow-y-auto">
             {GROUPS.map((g) => (
               <div key={g}>
-                <div className="sticky top-0 z-[1] px-6 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-ink-3 bg-raised/95 backdrop-blur border-y border-line flex justify-between">
+                <div className="sticky top-0 z-[1] px-6 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-ink-2 bg-raised/95 backdrop-blur border-y border-line flex justify-between">
                   <span>{g}</span><span className="font-mono normal-case">{rules.filter((r) => r.group === g).length}</span>
                 </div>
                 {rules.filter((r) => r.group === g).map((rule) => {
