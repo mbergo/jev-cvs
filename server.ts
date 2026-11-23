@@ -1,8 +1,8 @@
-import "dotenv/config";
 import express from "express";
 import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
+import { loadTypeSafeKey } from "./src/server/typesafeKey";
 import { createServer as createViteServer } from "vite";
 import {
   ALL_PURE_DETECTORS,
@@ -37,6 +37,15 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Refuse to start without a key: a server that runs without one answers every
+// evaluation with an error, and that is easy to miss behind a proxy.
+if (!loadTypeSafeKey()) {
+  console.error(
+    `TYPESAFE_API_KEY is missing: set it in the environment or in ${path.resolve(".env")}. Not starting.`
+  );
+  process.exit(1);
+}
 
 const PORT = Number(process.env.PORT ?? 3000);
 const TYPESAFE_API_BASE = "https://api.typesafe.ai/v1";
