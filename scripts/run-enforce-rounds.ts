@@ -94,7 +94,7 @@ for (const target of plane) {
 const last = plane.find((r) => r.id === previouslyBlocked)!;
 last.mode = originalMode.get(last.id)!;
 
-console.log(`\n== enforce: one rule in Block at a time, all 30 loaded, ${ROUNDS} rounds ==`);
+console.log(`\n== enforce: one rule in Block at a time, all ${plane.length} loaded, ${ROUNDS} rounds ==`);
 console.table(rows);
 console.log(`model: ${model} | threshold: ${ACTION} | rules: ${rows.length} | failures: ${failures}`);
 process.exit(failures ? 1 : 0);

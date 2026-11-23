@@ -75,9 +75,15 @@ export const THREAT_VECTOR_CRITERIA = {
   credential_or_secret_leak:
     "Contains API keys, cloud tokens, PEM private keys, JWTs, or high-entropy secrets.",
   pii_disclosure:
-    "Contains SSN, credit card, bank account, passport, EIN, or TIN numbers.",
+    "Contains SSN, credit card, bank account, passport, EIN, TIN, Medicare/Medicaid ID, health plan member ID, or prescriber DEA numbers.",
+  confidential_data_disclosure:
+    "Reveals non-public company information or identifiable patient health information: negotiations, M&A, legal, financial, HR, PBM rebate terms, unfiled government submissions.",
   prompt_injection_or_exploit:
     "Contains prompt injection, jailbreak, RCE, system file access, exfiltration, or malicious URLs/packages.",
+  harmful_content:
+    "Asks for instructions enabling serious physical harm, or promotes discrimination by gender or race.",
+  healthcare_misconduct:
+    "Asks the assistant to take part in improper healthcare conduct: dispensing without a valid prescription, upcoding, falsifying claims or records, denying coverage without clinician review, bulk patient exports, sharing health data with advertisers, skipping identity verification, or giving individual clinical advice.",
 } as const;
 
 /** Ordered: index == score level. */

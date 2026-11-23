@@ -1,7 +1,7 @@
 /**
  * Live verification against TypeSafe Jev through /api/evaluate.
  *   1. one-by-one : each rule is sent ALONE with its own sample prompt
- *   2. battery    : all 21 rules sent together for every preset (+4 negatives)
+ *   2. battery    : all rules sent together for every preset (+ the negatives)
  * Usage: PORT=3100 bun scripts/run-presets.ts
  */
 import {
@@ -74,7 +74,7 @@ for (const c of cases) {
     ok: ok ? "PASS" : "FAIL",
   });
 }
-console.log("\n== 2) full battery: all 21 rules on every preset + 4 negatives ==");
+console.log(`\n== 2) full battery: all ${INITIAL_CONTROL_PLANE_RULES.length} rules on every preset + ${NEGATIVE_PRESET_PROMPTS.length} negatives ==`);
 console.table(battery);
 console.log(`model: ${model} | action threshold: ${ACTION} | failures: ${failures}`);
 process.exit(failures ? 1 : 0);
