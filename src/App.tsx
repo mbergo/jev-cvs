@@ -68,7 +68,7 @@ interface EvalResult {
   };
 }
 
-const GROUPS: RuleGroup[] = ["PII", "Credentials & Secrets", "Confidential Data", "Injection & Execution", "Harmful Content"];
+const GROUPS: RuleGroup[] = ["PII", "Credentials & Secrets", "Confidential Data", "Injection & Execution", "Harmful Content", "Healthcare Conduct"];
 
 const VERDICT_LABEL: Record<EvalResult["effectiveVerdict"]["decision"], string> = {
   allow: "ALLOW",
@@ -183,8 +183,11 @@ export default function App() {
   const [runId, setRunId] = useState(0);
   useEffect(() => { localStorage.setItem("insideJev", inside ? "1" : "0"); }, [inside]);
   // Live wire: the latest browser → policy server round-trip, shown as devtools would.
-  const [wireOn, setWireOn] = useState<boolean>(() => localStorage.getItem("liveWire") === "1");
-  useEffect(() => { localStorage.setItem("liveWire", wireOn ? "1" : "0"); }, [wireOn]);
+  // On by default. Only an explicit switch-off is remembered, under its own key: the old
+  // "liveWire" key was written as "0" on every first load, so it cannot tell "never chose"
+  // from "turned off".
+  const [wireOn, setWireOn] = useState<boolean>(() => localStorage.getItem("liveWireOff") !== "1");
+  useEffect(() => { localStorage.setItem("liveWireOff", wireOn ? "0" : "1"); }, [wireOn]);
   const [wire, setWire] = useState<WireEntry | null>(null);
   const wireSeq = useRef(0);
   const [error, setError] = useState<string | null>(null);
@@ -192,7 +195,7 @@ export default function App() {
   const [editing, setEditing] = useState<ControlPlaneRule | null>(null);
   const [draft, setDraft] = useState({ ask: "", yes: "", no: "", examples: "", sample: "" });
 
-  // Batch run ("Run all 25")
+  // Batch run ("Run all N presets")
   interface BatchRow { id: string; label: string; expected: "flag" | "allow"; decision?: string; own?: number | null; ms?: number; ok?: boolean }
   const [batch, setBatch] = useState<BatchRow[] | null>(null);
   const [batchBusy, setBatchBusy] = useState(false);

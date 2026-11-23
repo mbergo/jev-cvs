@@ -4,7 +4,7 @@ A demo of a **non-autoregressive decision model** — TypeSafe's Jev ("System On
 the guardrail layer of an AI gateway. **No regex, no parsing.** Every guardrail is one short
 yes/no question; Jev answers each with a calibrated probability, and the gateway decides in code.
 
-30 rules + a threat-vector choice + a severity score are answered in **one HTTP call, ~250 ms**.
+44 rules + a threat-vector choice + a severity score are answered in **one HTTP call, ~250 ms**.
 
 ```
 AI application ──prompt──▶ Policy server (this demo) ──one request, 32 questions──▶ Jev
@@ -72,7 +72,7 @@ which becomes one **Noul** question in the request (`src/guardrails/typesafe.ts`
 ```
 
 Groups — PII · Credentials & Secrets · Confidential Data · Injection & Execution · Harmful
-Content — only organise the UI; every rule is evaluated independently. Rules are edited live in
+Content · Healthcare Conduct — only organise the UI; every rule is evaluated independently. Rules are edited live in
 the UI (mode, question, criteria, examples, test prompt) and travel with each request, so a
 reworded question re-scores the current prompt immediately. Short questions plus two examples of
 "yes" is what makes it fast and accurate: a vague question costs probability, not latency.
@@ -84,7 +84,7 @@ A new format (a fourth employee-ID scheme, a new vendor's key prefix) is one mor
 
 ```
 state     = { request: { prompt }, gateway: { stage: "input", active_rules: [...] } }
-questions = 30 × noul (one per rule) + primary_threat_vector (choice) + threat_severity_rubric (score 0..3)
+questions = 44 × noul (one per rule) + primary_threat_vector (choice) + threat_severity_rubric (score 0..3)
 POST https://api.typesafe.ai/v1/systemone   { model: "jev-latest", state, questions }
 
 per rule (code, not model):
@@ -100,13 +100,13 @@ it never makes the decision and `confidence` is never used as a gate.
 
 ## The UI
 
-- **Prompt** — type anything, or pick one of the 30 rule presets / safe negatives.
+- **Prompt** — type anything, or pick one of the 44 rule presets / safe negatives.
 - **Verdict banner** — ALLOW / ALERT / BLOCK, the rules that fired with their P(yes), the threat
   vector and the severity distribution, Jev's latency for the whole battery.
 - **Guardrails** — every rule with a live P(yes) bar against the 0.70 tick, a Test button, Edit,
   and the Enforce · Alert · Ignore switch. "All Enforce / Alert / Ignore" at the top.
-- **Run all 30 presets** — each rule's sample prompt through the full battery, pass/fail per group.
-- **Live wire** (toggle) — the latest browser → policy-server round-trip exactly as it went over
+- **Run all 44 presets** — each rule's sample prompt through the full battery, pass/fail per group.
+- **Live wire** (toggle, on by default) — the latest browser → policy-server round-trip exactly as it went over
   the wire: `→ TX` the request body, `← RX` the reply, with status, latency, size and the upstream
   Jev endpoint/model/token usage. Only real traffic; it streams during the batch run.
 - **Inside Jev** (toggle) — the same evaluation explained step by step: what was sent, what came
@@ -121,7 +121,7 @@ it never makes the decision and `confidence` is never used as a gate.
 | `src/App.tsx` | The studio UI |
 | `src/components/LiveWire.tsx` | Live request/response panel |
 | `src/components/InsideJev.tsx` | Step-by-step explanation panel |
-| `src/data/controlPlaneRules.ts` | The 30 rules — question, criteria, examples, sample prompt, mode |
+| `src/data/controlPlaneRules.ts` | The 44 rules — question, criteria, examples, sample prompt, mode |
 | `src/guardrails/typesafe.ts` | State builder, question builder, thresholds (single place) |
 | `scripts/run-presets.ts` | Live one-by-one + battery verification |
 | `scripts/run-enforce-rounds.ts`, `scripts/check-negatives.ts` | Calibration rounds and negative checks used by `./start.sh --test` |
