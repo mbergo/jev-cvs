@@ -390,7 +390,7 @@ export default function App() {
               <button type="button" onClick={runAll} disabled={batchBusy} className="btn px-4 py-2.5 border border-line-strong hover:bg-raised text-ink text-[15px]">
                 <Zap className="w-4 h-4 text-amber-400" />{batchBusy ? `Running ${batchDone}/${rules.length}…` : `Run all ${rules.length} presets`}
               </button>
-              <div className="flex items-center gap-5 pl-4 ml-1 border-l border-line-strong h-8">
+              <div className="ml-auto flex items-center gap-5 pl-2">
                 <Switch on={inside} onToggle={() => setInside((v) => !v)} label="Inside Jev" tone="bg-violet-500" />
                 <Switch on={wireOn} onToggle={() => setWireOn((v) => !v)} label="Live wire" tone="bg-emerald-500" />
               </div>
