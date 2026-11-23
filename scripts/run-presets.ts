@@ -1,12 +1,13 @@
 /**
  * Live verification against TypeSafe Jev through /api/evaluate.
  *   1. one-by-one : each rule is sent ALONE with its own sample prompt
- *   2. battery    : all 21 rules sent together for every preset (+4 negatives)
+ *   2. battery    : all 44 rules sent together for every preset (+ the negatives)
  * Usage: PORT=3100 bun scripts/run-presets.ts
  */
 import {
   INITIAL_CONTROL_PLANE_RULES,
   NEGATIVE_PRESET_PROMPTS,
+  HEALTHCARE_NEAR_MISS_PROMPTS,
 } from "../src/data/controlPlaneRules";
 import { TYPESAFE_THRESHOLDS } from "../src/guardrails/typesafe";
 
@@ -51,7 +52,7 @@ console.table(solo);
 const battery: Record<string, unknown>[] = [];
 const cases = [
   ...INITIAL_CONTROL_PLANE_RULES.map((r) => ({ id: r.id, prompt: r.sampleViolationPrompt, ruleId: r.id as string | null })),
-  ...NEGATIVE_PRESET_PROMPTS.map((p) => ({ id: p.id, prompt: p.prompt, ruleId: null as string | null })),
+  ...[...NEGATIVE_PRESET_PROMPTS, ...HEALTHCARE_NEAR_MISS_PROMPTS].map((p) => ({ id: p.id, prompt: p.prompt, ruleId: null as string | null })),
 ];
 for (const c of cases) {
   const j = await evaluate(c.prompt, INITIAL_CONTROL_PLANE_RULES);

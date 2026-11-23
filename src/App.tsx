@@ -14,6 +14,7 @@ import {
   buildRulePresets,
   type ControlPlaneRule,
   INITIAL_CONTROL_PLANE_RULES,
+  HEALTHCARE_NEAR_MISS_PROMPTS,
   NEGATIVE_PRESET_PROMPTS,
   type PresetPromptItem,
   type RuleEnforcementMode,
@@ -68,7 +69,11 @@ interface EvalResult {
   };
 }
 
-const GROUPS: RuleGroup[] = ["PII", "Credentials & Secrets", "Confidential Data", "Injection & Execution", "Harmful Content"];
+const GROUPS: RuleGroup[] = [
+  "PII", "Credentials & Secrets", "Confidential Data", "Injection & Execution", "Harmful Content",
+  // CVS Health proposal, listed after the original groups.
+  "Healthcare Identifiers", "Healthcare Confidential Data", "Healthcare Conduct",
+];
 
 const VERDICT_LABEL: Record<EvalResult["effectiveVerdict"]["decision"], string> = {
   allow: "ALLOW",
@@ -183,8 +188,9 @@ export default function App() {
   const [runId, setRunId] = useState(0);
   useEffect(() => { localStorage.setItem("insideJev", inside ? "1" : "0"); }, [inside]);
   // Live wire: the latest browser → policy server round-trip, shown as devtools would.
-  const [wireOn, setWireOn] = useState<boolean>(() => localStorage.getItem("liveWire") === "1");
-  useEffect(() => { localStorage.setItem("liveWire", wireOn ? "1" : "0"); }, [wireOn]);
+  // On by default. New storage key: the old "liveWire" key holds "0" for every browser that loaded the page before.
+  const [wireOn, setWireOn] = useState<boolean>(() => localStorage.getItem("liveWireOn") !== "0");
+  useEffect(() => { localStorage.setItem("liveWireOn", wireOn ? "1" : "0"); }, [wireOn]);
   const [wire, setWire] = useState<WireEntry | null>(null);
   const wireSeq = useRef(0);
   const [error, setError] = useState<string | null>(null);
@@ -192,12 +198,12 @@ export default function App() {
   const [editing, setEditing] = useState<ControlPlaneRule | null>(null);
   const [draft, setDraft] = useState({ ask: "", yes: "", no: "", examples: "", sample: "" });
 
-  // Batch run ("Run all 25")
+  // Batch run ("Run all N presets": one per guardrail)
   interface BatchRow { id: string; label: string; expected: "flag" | "allow"; decision?: string; own?: number | null; ms?: number; ok?: boolean }
   const [batch, setBatch] = useState<BatchRow[] | null>(null);
   const [batchBusy, setBatchBusy] = useState(false);
 
-  const presets = useMemo<PresetPromptItem[]>(() => [...buildRulePresets(rules), ...NEGATIVE_PRESET_PROMPTS], [rules]);
+  const presets = useMemo<PresetPromptItem[]>(() => [...buildRulePresets(rules), ...NEGATIVE_PRESET_PROMPTS, ...HEALTHCARE_NEAR_MISS_PROMPTS], [rules]);
 
   useEffect(() => {
     fetch("/api/typesafe-status").then((r) => r.json()).then(setStatus).catch(() => setStatus({ connected: false, model: "jev-latest", error: "unreachable" }));
@@ -370,6 +376,9 @@ export default function App() {
                   <optgroup label="Safe / negative">
                     {NEGATIVE_PRESET_PROMPTS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
                   </optgroup>
+                  <optgroup label="Healthcare near-misses (should allow)">
+                    {HEALTHCARE_NEAR_MISS_PROMPTS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                  </optgroup>
                 </select>
               </label>
             </div>
@@ -381,7 +390,7 @@ export default function App() {
               <button type="button" onClick={runAll} disabled={batchBusy} className="btn px-4 py-2.5 border border-line-strong hover:bg-raised text-ink text-[15px]">
                 <Zap className="w-4 h-4 text-amber-400" />{batchBusy ? `Running ${batchDone}/${rules.length}…` : `Run all ${rules.length} presets`}
               </button>
-              <div className="ml-auto flex items-center gap-5 pl-2">
+              <div className="flex items-center gap-5 pl-4 ml-1 border-l border-line-strong h-8">
                 <Switch on={inside} onToggle={() => setInside((v) => !v)} label="Inside Jev" tone="bg-violet-500" />
                 <Switch on={wireOn} onToggle={() => setWireOn((v) => !v)} label="Live wire" tone="bg-emerald-500" />
               </div>

@@ -1,4 +1,5 @@
-import { INITIAL_CONTROL_PLANE_RULES as R, NEGATIVE_PRESET_PROMPTS as N } from "../src/data/controlPlaneRules";
+import { INITIAL_CONTROL_PLANE_RULES as R, NEGATIVE_PRESET_PROMPTS, HEALTHCARE_NEAR_MISS_PROMPTS } from "../src/data/controlPlaneRules";
+const N = [...NEGATIVE_PRESET_PROMPTS, ...HEALTHCARE_NEAR_MISS_PROMPTS];
 import { TYPESAFE_THRESHOLDS as T } from "../src/guardrails/typesafe";
 const base=`http://localhost:3100`;
 const rows:any[]=[]; let fail=0;
