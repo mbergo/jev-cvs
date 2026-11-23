@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  ArrowRight,
   ChevronDown,
   ChevronRight,
   Play,
@@ -21,6 +20,7 @@ import {
   type RuleGroup,
 } from "./data/controlPlaneRules";
 import InsideJev from "./components/InsideJev";
+import JevConfig from "./components/JevConfig";
 import LiveWire, { type WireEntry } from "./components/LiveWire";
 import { TYPESAFE_THRESHOLDS } from "./guardrails/typesafe";
 
@@ -63,7 +63,7 @@ interface EvalResult {
     totalOutputTokens: number;
     decisionsLatencyMs: number;
     totalPipelineLatencyMs?: number;
-    requestPayload: { state: unknown; questions: Record<string, unknown> };
+    requestPayload: { model?: string; state: unknown; questions: Record<string, unknown> };
     rawAnswers: Record<string, Answer>;
   };
 }
@@ -76,6 +76,14 @@ const VERDICT_LABEL: Record<EvalResult["effectiveVerdict"]["decision"], string> 
   block: "BLOCK",
 };
 
+const MODE_LABEL: Record<RuleEnforcementMode, string> = { Block: "Enforce", Detect: "Alert", Ignore: "Ignore" };
+
+/** "pii_disclosure" → "PII disclosure": machine keys read as words in the verdict panel. */
+function humanize(key: string): string {
+  const s = key.replace(/_/g, " ").replace(/\bpii\b/i, "PII");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 // ─── Small components ──────────────────────────────────────────────────────
 
 function NoulBar({ p, thresholds }: { p: number | null; thresholds?: EvalResult["typesafeInternals"]["thresholds"] }) {
@@ -83,12 +91,12 @@ function NoulBar({ p, thresholds }: { p: number | null; thresholds?: EvalResult[
   const review = thresholds?.noulReview ?? 0.35;
   const band: Band = p === null ? "pass" : p >= action ? "action" : p >= review ? "review" : "pass";
   const color = band === "action" ? "bg-rose-500" : band === "review" ? "bg-sky-400" : "bg-emerald-500";
-  const text = band === "action" ? "text-rose-300" : band === "review" ? "text-sky-300" : "text-neutral-500";
+  const text = band === "action" ? "text-rose-300" : band === "review" ? "text-sky-300" : "text-ink-3";
   return (
-    <div className="flex items-center gap-2 w-40 shrink-0">
-      <div className="relative flex-1 h-2 bg-neutral-800 rounded-full overflow-hidden">
-        {p !== null && <div className={`h-full ${color} transition-all duration-500`} style={{ width: `${Math.max(2, p * 100)}%` }} />}
-        <div className="absolute top-0 bottom-0 w-px bg-neutral-500" style={{ left: `${action * 100}%` }} />
+    <div className="flex items-center gap-3 flex-1 min-w-[10rem]">
+      <div className="relative flex-1 h-1.5 bg-raised rounded-full overflow-hidden" title={`Action threshold ${action}`}>
+        {p !== null && <div className={`h-full rounded-full ${color} transition-all duration-500`} style={{ width: `${Math.max(2, p * 100)}%` }} />}
+        <div className="absolute -top-0.5 -bottom-0.5 w-0.5 bg-ink-3/70" style={{ left: `${action * 100}%` }} />
       </div>
       <span className={`font-mono text-sm tabular-nums w-10 text-right ${text}`}>{p === null ? "—" : p.toFixed(2)}</span>
     </div>
@@ -96,34 +104,72 @@ function NoulBar({ p, thresholds }: { p: number | null; thresholds?: EvalResult[
 }
 
 function ModeToggle({ mode, onChange }: { mode: RuleEnforcementMode; onChange: (m: RuleEnforcementMode) => void }) {
-  const opts: { m: RuleEnforcementMode; label: string; on: string }[] = [
-    { m: "Block", label: "Enforce", on: "bg-rose-600 text-white" },
-    { m: "Detect", label: "Alert", on: "bg-amber-500 text-black" },
-    { m: "Ignore", label: "Ignore", on: "bg-neutral-600 text-white" },
+  const opts: { m: RuleEnforcementMode; on: string }[] = [
+    { m: "Block", on: "bg-rose-600 text-white" },
+    { m: "Detect", on: "bg-amber-400 text-black" },
+    { m: "Ignore", on: "bg-neutral-600 text-white" },
   ];
   return (
-    <div className="flex rounded border border-neutral-800 overflow-hidden shrink-0">
+    <div className="flex p-0.5 gap-0.5 rounded-lg bg-canvas border border-line shrink-0">
       {opts.map((o) => (
-        <button key={o.m} type="button" onClick={() => onChange(o.m)}
-          className={`px-2 py-1.5 text-[13px] font-medium cursor-pointer ${mode === o.m ? o.on : "bg-[#0B0D11] text-neutral-400 hover:text-white"}`}>
-          {o.label}
+        <button key={o.m} type="button" onClick={() => onChange(o.m)} aria-pressed={mode === o.m}
+          className={`px-2.5 py-1 rounded-md text-[13px] font-medium cursor-pointer transition-colors ${mode === o.m ? o.on : "text-ink-3 hover:text-ink"}`}>
+          {MODE_LABEL[o.m]}
         </button>
       ))}
     </div>
   );
 }
 
+function Switch({ on, onToggle, label, tone }: { on: boolean; onToggle: () => void; label: string; tone: string }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} onClick={onToggle} className="flex items-center gap-2.5 text-sm text-ink-2 hover:text-ink cursor-pointer select-none">
+      <span className={`relative w-9 h-5 rounded-full transition-colors ${on ? tone : "bg-line-strong"}`}>
+        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${on ? "left-[1.125rem]" : "left-0.5"}`} />
+      </span>
+      {label}
+    </button>
+  );
+}
+
 function Collapsible({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="border border-neutral-800 rounded-lg bg-[#111318]">
-      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-neutral-300 cursor-pointer">
+    <div className="card overflow-hidden">
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="w-full flex items-center gap-3 px-6 py-4 text-[15px] font-medium text-ink-2 hover:text-ink cursor-pointer">
         {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}{title}
       </button>
-      {open && <div className="px-4 pb-4">{children}</div>}
+      {open && <div className="px-6 pb-6">{children}</div>}
     </div>
   );
 }
+
+function ProbabilityRows({ title, note, rows }: { title: string; note?: string; rows: { key: string; label: string; v: number; strong: boolean; color: string }[] }) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-sm font-semibold text-ink">{title}</h3>
+        {note && <span className="text-xs text-ink-3">{note}</span>}
+      </div>
+      <div className="space-y-2.5">
+        {rows.map((r) => (
+          <div key={r.key} className="grid grid-cols-[minmax(0,13rem)_1fr_2.75rem] items-center gap-3 text-sm">
+            <span className={`leading-snug ${r.strong ? "text-ink font-medium" : "text-ink-3"}`}>{r.label}</span>
+            <div className="h-1.5 bg-canvas/70 rounded-full overflow-hidden"><div className={`h-full rounded-full ${r.color}`} style={{ width: `${r.v * 100}%` }} /></div>
+            <span className="text-right font-mono tabular-nums text-ink-2">{(r.v * 100).toFixed(0)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const ACTION_TONE: Record<TriggeredRule["actionTaken"], { chip: string; label: string }> = {
+  "Enforced (Blocked)": { chip: "bg-rose-500/15 text-rose-300 ring-rose-500/30", label: "Blocked" },
+  "Alerted & Sanitized": { chip: "bg-amber-400/15 text-amber-300 ring-amber-400/30", label: "Alert" },
+  "Flagged for Review": { chip: "bg-sky-500/15 text-sky-300 ring-sky-500/30", label: "Review" },
+  "Ignored (Bypassed)": { chip: "bg-neutral-500/15 text-ink-3 ring-neutral-500/30", label: "Ignored" },
+};
 
 // ─── App ───────────────────────────────────────────────────────────────────
 
@@ -260,119 +306,135 @@ export default function App() {
   const batchPassed = batch?.filter((b) => b.ok).length ?? 0;
   const batchDone = batch?.filter((b) => b.decision).length ?? 0;
 
+  const activeCount = rules.filter((r) => r.mode !== "Ignore").length;
+  const verdictStyle = verdict === "block"
+    ? { box: "border-rose-500/40 bg-gradient-to-br from-rose-950/50 to-surface", icon: <ShieldAlert className="w-9 h-9 text-rose-400" />, word: "text-rose-300" }
+    : verdict === "redact"
+      ? { box: "border-amber-400/40 bg-gradient-to-br from-amber-950/40 to-surface", icon: <AlertTriangle className="w-9 h-9 text-amber-400" />, word: "text-amber-300" }
+      : { box: "border-emerald-500/40 bg-gradient-to-br from-emerald-950/40 to-surface", icon: <ShieldCheck className="w-9 h-9 text-emerald-400" />, word: "text-emerald-300" };
+
   return (
-    <div className="min-h-screen bg-[#0B0D11] text-neutral-100">
+    <div className="min-h-screen bg-canvas text-ink">
       {/* Header */}
-      <header className="border-b border-neutral-800 px-6 py-4 flex items-center justify-between gap-8 sticky top-0 bg-[#0B0D11]/95 backdrop-blur z-10">
-        <div className="flex items-center gap-3">
-          <ShieldCheck className="w-5 h-5 text-emerald-400" />
-          <div>
-            <h1 className="text-base font-bold tracking-tight">Non-Autoregressive Guardrails for AI Gateways</h1>
-            <p className="text-[13px] text-neutral-500">TypeSafe Jev · {rules.length} rules · one question per rule · one HTTP call · no regex</p>
+      <header className="sticky top-0 z-10 border-b border-line bg-canvas/85 backdrop-blur-md">
+        <div className="mx-auto max-w-[1600px] px-6 lg:px-10 h-[72px] flex items-center justify-between gap-8">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/15 ring-1 ring-emerald-500/30 flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs font-semibold tracking-[0.08em] uppercase text-ink-3">TypeSafe Guardrail Studio</div>
+              <h1 className="text-[17px] font-semibold tracking-tight truncate">Non-Autoregressive Guardrails for AI Gateways</h1>
+            </div>
           </div>
-        </div>
-        <div className="hidden lg:flex items-center gap-6 text-[13px] font-mono text-neutral-400 whitespace-nowrap">
-          <span className={status?.connected ? "text-emerald-400" : "text-rose-400"}>● {status ? (status.connected ? `api.typesafe.ai · ${result?.typesafeInternals.model ?? status.model}` : `offline: ${status.error}`) : "connecting…"}</span>
-          <span className="text-neutral-500">{counts.block} enforce · {counts.alert} alert · {counts.ignore} ignore</span>
-          <button type="button" onClick={() => applyRules(INITIAL_CONTROL_PLANE_RULES)} className="flex items-center gap-1 text-neutral-400 hover:text-white cursor-pointer"><RotateCcw className="w-3 h-3" />reset</button>
+          <div className="hidden lg:flex items-center gap-3 text-sm whitespace-nowrap">
+            <span className={`flex items-center gap-2 px-3 py-1.5 rounded-full ring-1 ${status?.connected ? "bg-emerald-500/10 ring-emerald-500/25 text-emerald-300" : status ? "bg-rose-500/10 ring-rose-500/25 text-rose-300" : "bg-raised ring-line text-ink-3"}`}>
+              <span className={`w-2 h-2 rounded-full ${status?.connected ? "bg-emerald-400" : status ? "bg-rose-400" : "bg-ink-3 animate-pulse"}`} />
+              {status ? (status.connected ? <>api.typesafe.ai <span className="font-mono text-[13px] opacity-80">{result?.typesafeInternals.model ?? status.model}</span></> : `Offline: ${status.error}`) : "Connecting…"}
+            </span>
+            <span className="px-3 py-1.5 rounded-full bg-raised ring-1 ring-line text-ink-2">
+              <span className="text-rose-300">{counts.block}</span> enforce · <span className="text-amber-300">{counts.alert}</span> alert · {counts.ignore} ignore
+            </span>
+            <button type="button" onClick={() => applyRules(INITIAL_CONTROL_PLANE_RULES)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-ink-3 hover:text-ink hover:bg-raised cursor-pointer"><RotateCcw className="w-3.5 h-3.5" />Reset</button>
+          </div>
         </div>
       </header>
 
-      <main className={`p-6 grid grid-cols-1 gap-6 mx-auto ${inside ? "w-full px-8 xl:grid-cols-2" : "xl:grid-cols-[1.4fr_1fr] max-w-[1700px]"}`}>
-        {/* ── Prompt, verdict, data ──────────────────────────── */}
-        <section className="flex flex-col gap-6">
+      <main className={`mx-auto px-6 lg:px-10 py-10 grid grid-cols-1 gap-8 ${inside ? "max-w-[1800px] xl:grid-cols-2" : "max-w-[1600px] xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]"}`}>
+        {/* ── Prompt, verdict, explanation ──────────────────── */}
+        <section className="flex flex-col gap-8 min-w-0">
+          {/* Intro */}
+          <div className="max-w-3xl">
+            <p className="text-[1.0625rem] leading-relaxed text-ink-2">
+              Every prompt that enters the gateway is checked against <span className="text-ink font-medium">{activeCount} active guardrails</span> in a single call.
+              Jev answers one yes/no question per guardrail; plain policy code turns those probabilities into <span className="text-emerald-300">Allow</span>, <span className="text-amber-300">Alert</span> or <span className="text-rose-300">Block</span>. No regex.
+            </p>
+          </div>
+
           {/* Prompt */}
-          <div className="border border-neutral-800 rounded-lg bg-[#111318] p-6 flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold ">Prompt entering the gateway</h2>
-              <select value={selectedPreset} onChange={(e) => { const p = presets.find((x) => x.id === e.target.value); if (p) pickPreset(p); }} className="bg-[#0B0D11] border border-neutral-700 rounded text-sm px-2 py-1.5 max-w-[260px]">
-                <option value="custom">— custom —</option>
-                {GROUPS.map((g) => (
-                  <optgroup key={g} label={g}>
-                    {rules.filter((r) => r.group === g).map((r) => <option key={r.id} value={`preset-${r.id}`}>{r.name}</option>)}
+          <div className="card p-7 flex flex-col gap-5">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <div className="eyebrow mb-1.5">Step 1 · Input</div>
+                <h2 className="section-title">Prompt entering the gateway</h2>
+              </div>
+              <label className="flex flex-col gap-1.5 text-xs font-medium text-ink-3">
+                Example prompt
+                <select value={selectedPreset} onChange={(e) => { const p = presets.find((x) => x.id === e.target.value); if (p) pickPreset(p); }} className="bg-canvas border border-line-strong rounded-lg text-sm text-ink px-3 py-2 w-[280px] max-w-full cursor-pointer focus:outline-none focus:border-emerald-500">
+                  <option value="custom">Custom prompt</option>
+                  {GROUPS.map((g) => (
+                    <optgroup key={g} label={g}>
+                      {rules.filter((r) => r.group === g).map((r) => <option key={r.id} value={`preset-${r.id}`}>{r.name}</option>)}
+                    </optgroup>
+                  ))}
+                  <optgroup label="Safe / negative">
+                    {NEGATIVE_PRESET_PROMPTS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
                   </optgroup>
-                ))}
-                <optgroup label="Safe / negative">
-                  {NEGATIVE_PRESET_PROMPTS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-                </optgroup>
-              </select>
+                </select>
+              </label>
             </div>
-            <textarea value={prompt} onChange={(e) => { setPrompt(e.target.value); setSelectedPreset("custom"); }} rows={4} className="w-full bg-[#0B0D11] border border-neutral-700 rounded p-4 font-mono text-base resize-y focus:outline-none focus:border-emerald-600" placeholder="Paste any prompt…" />
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => run()} disabled={busy || !prompt.trim()} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-base font-semibold rounded cursor-pointer">
-                <Play className="w-4 h-4" />{busy ? "Evaluating…" : "Evaluate"}
+            <textarea value={prompt} onChange={(e) => { setPrompt(e.target.value); setSelectedPreset("custom"); }} rows={4} className="w-full bg-canvas border border-line-strong rounded-xl px-5 py-4 text-[1.0625rem] leading-relaxed text-ink placeholder:text-ink-3 resize-y focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition" placeholder="Paste any prompt…" />
+            <div className="flex flex-wrap items-center gap-3">
+              <button type="button" onClick={() => run()} disabled={busy || !prompt.trim()} className="btn px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-emerald-950 text-[15px] shadow-lg shadow-emerald-500/10">
+                <Play className="w-4 h-4 fill-current" />{busy ? "Evaluating…" : "Evaluate"}
               </button>
-              <button type="button" onClick={runAll} disabled={batchBusy} className="flex items-center gap-2 px-3 py-2 border border-neutral-700 hover:bg-neutral-800 disabled:opacity-50 text-base rounded cursor-pointer">
+              <button type="button" onClick={runAll} disabled={batchBusy} className="btn px-4 py-2.5 border border-line-strong hover:bg-raised text-ink text-[15px]">
                 <Zap className="w-4 h-4 text-amber-400" />{batchBusy ? `Running ${batchDone}/${rules.length}…` : `Run all ${rules.length} presets`}
               </button>
-              <button type="button" role="switch" aria-checked={inside} onClick={() => setInside((v) => !v)} className="ml-auto flex items-center gap-2 text-sm text-neutral-300 cursor-pointer select-none">
-                <span className={`relative w-8 h-4 rounded-full transition-colors ${inside ? "bg-violet-600" : "bg-neutral-700"}`}>
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${inside ? "left-4" : "left-0.5"}`} />
-                </span>
-                Inside Jev
-              </button>
-              <button type="button" role="switch" aria-checked={wireOn} onClick={() => setWireOn((v) => !v)} className="flex items-center gap-2 text-sm text-neutral-300 cursor-pointer select-none">
-                <span className={`relative w-8 h-4 rounded-full transition-colors ${wireOn ? "bg-emerald-600" : "bg-neutral-700"}`}>
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${wireOn ? "left-4" : "left-0.5"}`} />
-                </span>
-                Live wire
-              </button>
-              {error && <span className="text-sm text-rose-400 truncate">{error}</span>}
+              <div className="ml-auto flex items-center gap-5 pl-2">
+                <Switch on={inside} onToggle={() => setInside((v) => !v)} label="Inside Jev" tone="bg-violet-500" />
+                <Switch on={wireOn} onToggle={() => setWireOn((v) => !v)} label="Live wire" tone="bg-emerald-500" />
+              </div>
             </div>
+            {error && <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300 break-words">{error}</div>}
           </div>
 
           {/* Verdict */}
           {result && (
-            <div className={`border rounded-lg p-6 ${verdict === "block" ? "border-rose-700 bg-rose-950/30" : verdict === "redact" ? "border-amber-700 bg-amber-950/25" : "border-emerald-700 bg-emerald-950/25"}`}>
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  {verdict === "block" ? <ShieldAlert className="w-8 h-8 text-rose-400" /> : verdict === "redact" ? <AlertTriangle className="w-8 h-8 text-amber-400" /> : <ShieldCheck className="w-8 h-8 text-emerald-400" />}
+            <div className={`rounded-2xl border p-7 ${verdictStyle.box}`}>
+              <div className="flex flex-wrap items-start justify-between gap-6">
+                <div className="flex items-center gap-4">
+                  {verdictStyle.icon}
                   <div>
-                    <div className="text-3xl font-bold tracking-tight">{VERDICT_LABEL[verdict!]}</div>
-                    <div className="text-sm text-neutral-300">
-                      {verdict === "block" && "Request halted — not forwarded to the LLM."}
-                      {verdict === "redact" && "Forwarded with notice — rules in Alert mode fired."}
-                      {verdict === "allow" && "Clean — forwarded to the LLM."}
-                    </div>
+                    <div className="eyebrow mb-0.5">Step 2 · Decision</div>
+                    <div className={`text-4xl font-bold tracking-tight leading-tight ${verdictStyle.word}`}>{VERDICT_LABEL[verdict!]}</div>
                   </div>
                 </div>
-                <div className="text-right text-[13px] font-mono text-neutral-400">
-                  <div>{result.typesafeInternals.model}</div>
-                  <div>{result.typesafeInternals.decisionsLatencyMs} ms for {Object.keys(result.typesafeInternals.requestPayload.questions).length} questions</div>
+                <div className="text-right text-sm text-ink-2">
+                  <div><span className="font-semibold text-ink text-lg tabular-nums">{result.typesafeInternals.decisionsLatencyMs} ms</span></div>
+                  <div className="text-ink-3">{Object.keys(result.typesafeInternals.requestPayload.questions).length} questions · <span className="font-mono text-[13px]">{result.typesafeInternals.model}</span></div>
                 </div>
               </div>
+              <p className="mt-4 text-[1.0625rem] text-ink-2">
+                {verdict === "block" && "Request halted. It was not forwarded to the LLM."}
+                {verdict === "redact" && "Forwarded with a notice: guardrails in Alert mode fired."}
+                {verdict === "allow" && "Clean. The request was forwarded to the LLM."}
+              </p>
               {result.triggeredRules.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {result.triggeredRules.map((t) => (
-                    <span key={t.ruleId} className={`text-[13px] font-mono px-2 py-0.5 rounded border ${t.actionTaken === "Enforced (Blocked)" ? "border-rose-700 text-rose-300" : t.actionTaken === "Flagged for Review" ? "border-sky-700 text-sky-300" : "border-amber-700 text-amber-300"}`}>
-                      {t.ruleName} {t.typesafeNoulProbability?.toFixed(2)}{t.escalatedBySeverity ? " ↑sev" : ""}
-                    </span>
-                  ))}
+                <div className="mt-5">
+                  <div className="text-xs font-medium text-ink-3 mb-2">Guardrails that fired</div>
+                  <div className="flex flex-wrap gap-2">
+                    {result.triggeredRules.map((t) => (
+                      <span key={t.ruleId} className={`inline-flex items-center gap-2 text-sm px-3 py-1 rounded-full ring-1 ${ACTION_TONE[t.actionTaken].chip}`}>
+                        <span className="font-medium">{t.ruleName}</span>
+                        <span className="font-mono text-[13px] opacity-80">{t.typesafeNoulProbability?.toFixed(2)}</span>
+                        {t.escalatedBySeverity && <span className="text-xs opacity-80" title="Escalated by the overall severity score">↑ severity</span>}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
 
               {/* Vector + severity */}
-              <div className="mt-6 grid grid-cols-2 gap-10">
-                <div>
-                  <div className="text-xs text-neutral-500 mb-1.5">Threat vector (choice)</div>
-                  {vector && Object.entries(vector.probabilities).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
-                    <div key={k} className="flex items-center gap-2 text-[13px] font-mono mb-1.5">
-                      <span className={`w-52 truncate ${k === vector.choice ? "text-white" : "text-neutral-500"}`}>{k}</span>
-                      <div className="flex-1 h-2 bg-neutral-800 rounded"><div className={`h-full rounded ${k === vector.choice ? "bg-white" : "bg-neutral-600"}`} style={{ width: `${v * 100}%` }} /></div>
-                      <span className="w-10 text-right">{(v * 100).toFixed(0)}%</span>
-                    </div>
-                  ))}
-                </div>
-                <div>
-                  <div className="text-xs text-neutral-500 mb-1.5">Severity (score 0–3) · {severity?.score.toFixed(2)} · escalates reviews at ≥ {result.typesafeInternals.thresholds.severityBlock}</div>
-                  {severity && Object.entries(severity.probabilities).map(([lvl, v]) => (
-                    <div key={lvl} className="flex items-center gap-2 text-[13px] font-mono mb-1.5">
-                      <span className="w-52 truncate text-neutral-400">{lvl} · {severity.legend?.[lvl]?.split(":")[0]}</span>
-                      <div className="flex-1 h-2 bg-neutral-800 rounded"><div className={`h-full rounded ${Number(lvl) >= result.typesafeInternals.thresholds.severityBlock ? "bg-rose-500" : "bg-emerald-500"}`} style={{ width: `${v * 100}%` }} /></div>
-                      <span className="w-10 text-right">{(v * 100).toFixed(0)}%</span>
-                    </div>
-                  ))}
-                </div>
+              <div className="mt-7 pt-6 border-t border-white/10 grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-6">
+                {vector && (
+                  <ProbabilityRows title="Threat vector" note="Choice question"
+                    rows={Object.entries(vector.probabilities).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ key: k, label: humanize(k), v, strong: k === vector.choice, color: k === vector.choice ? "bg-ink" : "bg-ink-3/50" }))} />
+                )}
+                {severity && (
+                  <ProbabilityRows title={`Severity · ${severity.score.toFixed(2)} of 3`} note={`Escalates reviews at ≥ ${result.typesafeInternals.thresholds.severityBlock}`}
+                    rows={Object.entries(severity.probabilities).map(([lvl, v]) => ({ key: lvl, label: `${lvl} · ${severity.legend?.[lvl]?.split(":")[0] ?? ""}`, v, strong: Number(lvl) === Math.round(severity.score), color: Number(lvl) >= result.typesafeInternals.thresholds.severityBlock ? "bg-rose-500" : "bg-emerald-500" }))} />
+                )}
               </div>
             </div>
           )}
@@ -387,31 +449,46 @@ export default function App() {
 
           {/* Batch results */}
           {batch && (
-            <div className="border border-neutral-800 rounded-lg bg-[#111318] overflow-hidden">
-              <div className="px-4 py-2.5 border-b border-neutral-800 flex items-center justify-between">
-                <h2 className="text-sm font-semibold ">All presets · live</h2>
-                <span className={`text-sm font-mono ${batchDone === batch.length && batchPassed === batch.length ? "text-emerald-400" : "text-neutral-300"}`}>{batchPassed}/{batchDone} pass{batchBusy ? "…" : ""}</span>
+            <div className="card overflow-hidden">
+              <div className="px-6 py-5 border-b border-line flex items-center justify-between gap-4">
+                <div>
+                  <div className="eyebrow mb-1">Batch run · live</div>
+                  <h2 className="section-title">All presets</h2>
+                </div>
+                <div className="text-right">
+                  <div className={`text-2xl font-semibold tabular-nums ${batchDone === batch.length && batchPassed === batch.length ? "text-emerald-300" : "text-ink"}`}>{batchPassed}/{batchDone}</div>
+                  <div className="text-xs text-ink-3">{batchBusy ? "running…" : "passed"}</div>
+                </div>
               </div>
-              <div className="max-h-72 overflow-y-auto">
-                <table className="w-full text-[13px] font-mono">
-                  <thead className="text-neutral-500 sticky top-0 bg-[#111318]"><tr><th className="text-left px-4 py-1.5 font-normal">preset</th><th className="text-left px-2 font-normal">expect</th><th className="text-left px-2 font-normal">verdict</th><th className="text-right px-2 font-normal">own noul</th><th className="text-right px-2 font-normal">ms</th><th className="px-4 font-normal"></th></tr></thead>
+              <div className="max-h-96 overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-xs text-ink-3 sticky top-0 bg-surface z-[1]">
+                    <tr>
+                      <th className="text-left px-6 py-2.5 font-medium">Preset</th>
+                      <th className="text-left px-3 font-medium">Expected</th>
+                      <th className="text-left px-3 font-medium">Verdict</th>
+                      <th className="text-right px-3 font-medium">Own P(yes)</th>
+                      <th className="text-right px-3 font-medium">ms</th>
+                      <th className="px-6 font-medium"><span className="sr-only">Result</span></th>
+                    </tr>
+                  </thead>
                   <tbody>
-                    {[...GROUPS.map((g) => ({ name: g as string, ids: rules.filter((r) => r.group === g).map((r) => `preset-${r.id}`) }))].map(({ name, ids }) => {
+                    {GROUPS.map((g) => ({ name: g as string, ids: rules.filter((r) => r.group === g).map((r) => `preset-${r.id}`) })).map(({ name, ids }) => {
                       const rows = ids.map((id) => batch.find((b) => b.id === id)).filter((b): b is BatchRow => !!b);
                       if (rows.length === 0) return null;
                       return (
                         <React.Fragment key={name}>
-                          <tr className="border-t border-neutral-700 bg-neutral-900/60">
-                            <td colSpan={6} className="px-4 py-1.5 text-neutral-300 font-semibold">{name} · {rows.filter((b) => b.ok).length}/{rows.length}</td>
+                          <tr className="border-t border-line bg-raised/60">
+                            <td colSpan={6} className="px-6 py-2 text-xs font-semibold uppercase tracking-wider text-ink-3">{name} <span className="ml-1 normal-case tracking-normal font-mono">{rows.filter((b) => b.ok).length}/{rows.length}</span></td>
                           </tr>
                           {rows.map((b) => (
-                            <tr key={b.id} className="border-t border-neutral-800/50">
-                              <td className="px-4 py-1.5 truncate max-w-[220px]">{b.label}</td>
-                              <td className="px-2 text-neutral-500">{b.expected}</td>
-                              <td className={`px-2 ${b.decision === "BLOCK" ? "text-rose-300" : b.decision === "ALERT" ? "text-amber-300" : b.decision === "ALLOW" ? "text-emerald-300" : "text-neutral-500"}`}>{b.decision ?? "…"}</td>
-                              <td className="px-2 text-right">{b.own === undefined ? "" : b.own === null ? "—" : b.own.toFixed(2)}</td>
-                              <td className="px-2 text-right text-neutral-400">{b.ms ?? ""}</td>
-                              <td className="px-4 text-right">{b.ok === undefined ? "" : b.ok ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">✗</span>}</td>
+                            <tr key={b.id} className="border-t border-line/60 hover:bg-raised/40">
+                              <td className="px-6 py-2.5 text-ink">{b.label}</td>
+                              <td className="px-3 text-ink-3">{b.expected}</td>
+                              <td className={`px-3 font-semibold text-xs tracking-wide ${b.decision === "BLOCK" ? "text-rose-300" : b.decision === "ALERT" ? "text-amber-300" : b.decision === "ALLOW" ? "text-emerald-300" : "text-ink-3"}`}>{b.decision ?? "…"}</td>
+                              <td className="px-3 text-right font-mono tabular-nums">{b.own === undefined ? "" : b.own === null ? "—" : b.own.toFixed(2)}</td>
+                              <td className="px-3 text-right font-mono tabular-nums text-ink-3">{b.ms ?? ""}</td>
+                              <td className="px-6 text-right">{b.ok === undefined ? "" : b.ok ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">✗</span>}</td>
                             </tr>
                           ))}
                         </React.Fragment>
@@ -425,10 +502,11 @@ export default function App() {
 
           {/* Architecture: where a prompt goes, from start to decision — shown when Inside Jev is off */}
           {!inside && (
-            <div className="border border-neutral-700 rounded-md bg-neutral-900/60 p-5 text-base text-neutral-300">
-              <div className="font-medium text-white mb-1">Architecture</div>
-              <p className="text-sm text-neutral-400 mb-4">Where a prompt goes, from the application to the decision.</p>
-              <div className="flex items-stretch gap-2">
+            <section className="card p-7">
+              <div className="eyebrow mb-2">How it works</div>
+              <h2 className="section-title">Architecture</h2>
+              <p className="lead mt-1.5">Where a prompt goes, from the application to the decision.</p>
+              <ol className="mt-7">
                 {[
                   { title: "AI application", body: "A user writes a prompt." },
                   { title: "Policy server", body: "This demo. Receives the prompt and builds one yes/no question per guardrail." },
@@ -436,114 +514,89 @@ export default function App() {
                   { title: "Policy code", body: `Compares each probability with ${TYPESAFE_THRESHOLDS.noulAction.toFixed(2)} (triggered) and ${TYPESAFE_THRESHOLDS.noulReview.toFixed(2)} (review), then applies the mode of each guardrail.` },
                   { title: "Decision", body: "Allow, Alert or Block." },
                 ].map((step, i, all) => (
-                  <React.Fragment key={step.title}>
-                    <div className="flex-1 min-w-0 rounded-md border border-neutral-700 bg-[#0B0D11] p-3">
-                      <div className="text-sm text-white mb-1">{step.title}</div>
-                      <div className="text-sm text-neutral-400 leading-relaxed">{step.body}</div>
+                  <li key={step.title} className="grid grid-cols-[2rem_minmax(0,1fr)] gap-x-4">
+                    <div className="flex flex-col items-center">
+                      <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold ring-1 ${step.title === "Jev" ? "bg-violet-500/15 text-violet-300 ring-violet-500/40" : "bg-raised text-ink-2 ring-line-strong"}`}>{i + 1}</span>
+                      {i < all.length - 1 && <span className="flex-1 w-px bg-line-strong my-1" />}
                     </div>
-                    {i < all.length - 1 && <ArrowRight className="w-4 h-4 self-center shrink-0 text-neutral-500" />}
-                  </React.Fragment>
+                    <div className={i < all.length - 1 ? "pb-5" : ""}>
+                      <div className="text-[15px] font-semibold text-ink pt-1">{step.title}</div>
+                      <p className="text-[15px] leading-relaxed text-ink-2 mt-0.5">{step.body}</p>
+                    </div>
+                  </li>
                 ))}
+              </ol>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-7">
+                <div className="rounded-xl bg-raised/60 border border-line p-4 text-[15px] leading-relaxed text-ink-2"><div className="text-xs font-semibold uppercase tracking-wider text-ink-3 mb-1">Sent to Jev</div>The prompt and {activeCount} guardrail questions, in a single request.</div>
+                <div className="rounded-xl bg-raised/60 border border-line p-4 text-[15px] leading-relaxed text-ink-2"><div className="text-xs font-semibold uppercase tracking-wider text-ink-3 mb-1">Returned by Jev</div>One probability per question. Jev does not make the decision.</div>
               </div>
-              <div className="grid grid-cols-2 gap-4 mt-4 text-sm text-neutral-400">
-                <div><span className="text-neutral-200">Sent to Jev:</span> the prompt and {rules.filter((r) => r.mode !== "Ignore").length} guardrail questions, in a single request.</div>
-                <div><span className="text-neutral-200">Returned by Jev:</span> one probability per question. Jev does not make the decision.</div>
-              </div>
-            </div>
+            </section>
           )}
 
           {/* What Jev lets you configure — shown here when Inside Jev is off */}
-          {!inside && (
-          <div className="border border-neutral-700 rounded-md bg-neutral-900/60 p-5 text-base leading-relaxed text-neutral-300">
-            <div className="font-medium text-white mb-3">What can be configured in Jev</div>
-            <div className="grid grid-cols-1 2xl:grid-cols-2 gap-x-10 gap-y-4">
-              <div>
-                <div className="text-neutral-200 mb-1">Per question</div>
-                <ul className="list-disc pl-5 space-y-1 text-neutral-400">
-                  <li><span className="text-neutral-300">Type:</span> Noul (yes/no, returns a probability), Choice (one of several options), Score (a position on a scale you describe), Box (a location in an image; Jev 1.14 only).</li>
-                  <li><span className="text-neutral-300">Instructions:</span> the question, as plain text or as structured fields.</li>
-                  <li><span className="text-neutral-300">Criteria:</span> what yes and no mean (Noul), the options (Choice), or the levels (Score).</li>
-                </ul>
-              </div>
-              <div>
-                <div className="text-neutral-200 mb-1">Per request</div>
-                <ul className="list-disc pl-5 space-y-1 text-neutral-400">
-                  <li><span className="text-neutral-300">State:</span> what Jev reads: text, JSON, or PNG and JPEG images.</li>
-                  <li><span className="text-neutral-300">Model:</span> jev-latest, jev-preview, or a fixed version such as jev-1.14.0.</li>
-                  <li><span className="text-neutral-300">Long context:</span> an optional header raises the limit to 262,000 tokens (default 64,000 per request and 32,000 per question). It is slower and less accurate.</li>
-                </ul>
-              </div>
-              <div>
-                <div className="text-neutral-200 mb-1">Per account</div>
-                <ul className="list-disc pl-5 space-y-1 text-neutral-400">
-                  <li>Rate limits, set in the TypeSafe console.</li>
-                </ul>
-              </div>
-              <div>
-                <div className="text-neutral-200 mb-1">Not configurable</div>
-                <ul className="list-disc pl-5 space-y-1 text-neutral-400">
-                  <li>The model is not trained on customer data: no fine-tuning and no LoRA. Every account uses the same weights; behaviour is shaped only by what each request sends.</li>
-                  <li>Thresholds do not exist in Jev. Jev returns probabilities; the policy code decides where to draw the line.</li>
-                </ul>
-              </div>
-            </div>
-            <div className="mt-4 text-sm text-neutral-500">Source: docs.typesafe.ai (Models and Primitives pages).</div>
-          </div>
-          )}
+          {!inside && <JevConfig />}
 
           {/* Raw data */}
           {result && (
-            <>
+            <div className="flex flex-col gap-3">
               <Collapsible title="Request sent to POST /v1/systemone">
-                <pre className="text-[13px] font-mono text-neutral-300 overflow-auto max-h-80 bg-[#0B0D11] p-4 rounded">{JSON.stringify({ model: "jev-latest", state: result.typesafeInternals.requestPayload.state, questions: result.typesafeInternals.requestPayload.questions }, null, 2)}</pre>
+                <pre className="text-[13px] leading-relaxed font-mono text-ink-2 overflow-auto max-h-96 bg-canvas p-5 rounded-xl border border-line">{JSON.stringify({ model: result.typesafeInternals.requestPayload.model ?? "jev-latest", state: result.typesafeInternals.requestPayload.state, questions: result.typesafeInternals.requestPayload.questions }, null, 2)}</pre>
               </Collapsible>
               <Collapsible title="Raw answers from Jev">
-                <pre className="text-[13px] font-mono text-neutral-300 overflow-auto max-h-80 bg-[#0B0D11] p-4 rounded">{JSON.stringify(result.typesafeInternals.rawAnswers, null, 2)}</pre>
+                <pre className="text-[13px] leading-relaxed font-mono text-ink-2 overflow-auto max-h-96 bg-canvas p-5 rounded-xl border border-line">{JSON.stringify(result.typesafeInternals.rawAnswers, null, 2)}</pre>
               </Collapsible>
-            </>
+            </div>
           )}
         </section>
-        {/* ── Rules with live noul bars ───────────────────────── */}
-        <section className="border border-neutral-800 rounded-lg bg-[#111318] overflow-hidden">
-          <div className="px-4 py-3 border-b border-neutral-800 flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-semibold ">Guardrails</h2>
-              <p className="text-[13px] text-neutral-500">{inside ? "Probability that the current prompt violates each guardrail, as returned by Jev." : `Bar = P(yes) from Jev for the current prompt · tick = action threshold ${result?.typesafeInternals.thresholds.noulAction ?? 0.7} · blue = review band`}</p>
+
+        {/* ── Guardrails with live probability bars ─────────── */}
+        <section className="card overflow-hidden self-start xl:sticky xl:top-[104px] min-w-0">
+          <div className="px-6 py-5 border-b border-line">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="eyebrow mb-1">Policy</div>
+                <h2 className="section-title">Guardrails</h2>
+              </div>
+              <div className="flex gap-1.5">
+                {(["Block", "Detect", "Ignore"] as RuleEnforcementMode[]).map((m) => (
+                  <button key={m} type="button" onClick={() => applyRules(rules.map((r) => ({ ...r, mode: m })))} className="px-3 py-1.5 text-[13px] text-ink-2 border border-line-strong rounded-lg hover:bg-raised hover:text-ink cursor-pointer whitespace-nowrap">
+                    All {MODE_LABEL[m]}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex gap-2">
-              {(["Block", "Detect", "Ignore"] as RuleEnforcementMode[]).map((m) => (
-                <button key={m} type="button" onClick={() => applyRules(rules.map((r) => ({ ...r, mode: m })))} className="px-2 py-1.5 text-[13px] border border-neutral-700 rounded hover:bg-neutral-800 cursor-pointer">
-                  All {m === "Block" ? "Enforce" : m === "Detect" ? "Alert" : "Ignore"}
-                </button>
-              ))}
-            </div>
+            <p className="mt-2 text-sm leading-relaxed text-ink-3">
+              {inside
+                ? "Probability that the current prompt violates each guardrail, as returned by Jev."
+                : <>Each bar is P(yes) from Jev for the current prompt. The tick marks the action threshold ({result?.typesafeInternals.thresholds.noulAction ?? TYPESAFE_THRESHOLDS.noulAction}); <span className="text-sky-300">blue</span> is the review band.</>}
+            </p>
           </div>
 
           {inside ? (
-            <div className="p-4 xl:max-h-[calc(100vh-180px)] xl:overflow-y-auto">
+            <div className="overflow-x-auto xl:max-h-[calc(100vh-260px)] xl:overflow-y-auto">
               <table className="w-full border-collapse text-[15px]">
-                <thead>
+                <thead className="sticky top-0 bg-surface z-[1] text-xs uppercase tracking-wider text-ink-3">
                   <tr>
-                    <th className="border border-neutral-600 px-4 py-3 font-medium text-neutral-200 text-center w-56">Guardrail</th>
-                    <th className="border border-neutral-600 px-4 py-3 font-medium text-neutral-200 text-center">Question sent to Jev</th>
-                    <th className="border border-neutral-600 px-4 py-3 font-medium text-neutral-200 text-center w-32">Probability</th>
+                    <th className="px-6 py-3 font-semibold text-left w-[30%]">Guardrail</th>
+                    <th className="px-3 py-3 font-semibold text-left">Question sent to Jev</th>
+                    <th className="px-6 py-3 font-semibold text-right w-28">Probability</th>
                   </tr>
                 </thead>
                 <tbody>
                   {GROUPS.map((g) => (
                     <React.Fragment key={g}>
-                      <tr>
-                        <td colSpan={3} className="border border-neutral-600 px-4 py-2 text-sm font-semibold text-neutral-400 bg-[#0B0D11]">{g}</td>
+                      <tr className="border-t border-line bg-raised/60">
+                        <td colSpan={3} className="px-6 py-2 text-xs font-semibold uppercase tracking-wider text-ink-3">{g}</td>
                       </tr>
                       {rules.filter((r) => r.group === g).map((rule) => {
                         const p = rule.mode === "Ignore" ? null : noulOf(rule.id);
                         const th = result?.typesafeInternals.thresholds;
-                        const tone = p === null || !th ? "text-neutral-500" : p >= th.noulAction ? "text-rose-300" : p >= th.noulReview ? "text-sky-300" : "text-neutral-300";
+                        const tone = p === null || !th ? "text-ink-3" : p >= th.noulAction ? "text-rose-300" : p >= th.noulReview ? "text-sky-300" : "text-ink-2";
                         return (
-                          <tr key={rule.id}>
-                            <td className={`border border-neutral-600 px-4 py-3 align-top ${rule.mode === "Ignore" ? "text-neutral-500" : "text-neutral-100"}`}>{rule.name}</td>
-                            <td className="border border-neutral-600 px-4 py-3 align-top text-neutral-300 leading-relaxed">{rule.typesafeQuestion.instructions}</td>
-                            <td className={`border border-neutral-600 px-4 py-3 align-top text-right font-mono text-lg ${tone}`}>{p === null ? "—" : `${Math.round(p * 100)}%`}</td>
+                          <tr key={rule.id} className="border-t border-line/60">
+                            <td className={`px-6 py-3.5 align-top font-medium ${rule.mode === "Ignore" ? "text-ink-3" : "text-ink"}`}>{rule.name}</td>
+                            <td className="px-3 py-3.5 align-top text-ink-2 leading-relaxed">{rule.typesafeQuestion.instructions}</td>
+                            <td className={`px-6 py-3.5 align-top text-right font-mono text-lg tabular-nums ${tone}`}>{p === null ? "—" : `${Math.round(p * 100)}%`}</td>
                           </tr>
                         );
                       })}
@@ -553,26 +606,33 @@ export default function App() {
               </table>
             </div>
           ) : (
-          <div className="xl:max-h-[calc(100vh-180px)] xl:overflow-y-auto">
+          <div className="xl:max-h-[calc(100vh-280px)] xl:overflow-y-auto">
             {GROUPS.map((g) => (
               <div key={g}>
-                <div className="px-4 py-1.5 text-xs font-semibold text-neutral-500 bg-[#0B0D11] border-y border-neutral-800/70">{g} · {rules.filter((r) => r.group === g).length}</div>
+                <div className="sticky top-0 z-[1] px-6 py-2 text-xs font-semibold uppercase tracking-wider text-ink-3 bg-raised/95 backdrop-blur border-y border-line flex justify-between">
+                  <span>{g}</span><span className="font-mono normal-case">{rules.filter((r) => r.group === g).length}</span>
+                </div>
                 {rules.filter((r) => r.group === g).map((rule) => {
                   const hit = result?.triggeredRules.find((t) => t.ruleId === rule.id);
                   const p = rule.mode === "Ignore" ? null : noulOf(rule.id);
+                  const rowTint = hit ? (hit.actionTaken === "Enforced (Blocked)" ? "bg-rose-500/[0.07] shadow-[inset_3px_0_0_rgb(244_63_94)]" : hit.actionTaken === "Flagged for Review" ? "bg-sky-500/[0.06] shadow-[inset_3px_0_0_rgb(56_189_248)]" : "bg-amber-400/[0.06] shadow-[inset_3px_0_0_rgb(251_191_36)]") : "";
                   return (
-                    <div key={rule.id} className={`px-4 py-2 flex items-center gap-3 border-b border-neutral-800/50 ${hit ? (hit.actionTaken === "Enforced (Blocked)" ? "bg-rose-950/25" : hit.actionTaken === "Flagged for Review" ? "bg-sky-950/20" : "bg-amber-950/20") : ""}`}>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className={`text-base font-medium truncate ${rule.mode === "Ignore" ? "text-neutral-500" : ""}`}>{rule.name}</span>
-                          {hit && <span className={`text-xs font-mono px-1.5 py-0.5 rounded ${hit.actionTaken === "Enforced (Blocked)" ? "bg-rose-600/30 text-rose-300" : hit.actionTaken === "Flagged for Review" ? "bg-sky-600/30 text-sky-300" : "bg-amber-600/30 text-amber-300"}`}>{hit.actionTaken === "Enforced (Blocked)" ? "BLOCKED" : hit.actionTaken === "Flagged for Review" ? "REVIEW" : "ALERT"}{hit.escalatedBySeverity ? " ↑sev" : ""}</span>}
+                    <div key={rule.id} className={`px-6 py-4 border-b border-line/60 ${rowTint}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className={`text-[15px] font-semibold leading-snug ${rule.mode === "Ignore" ? "text-ink-3" : "text-ink"}`}>{rule.name}</span>
+                            {hit && <span className={`text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full ring-1 ${ACTION_TONE[hit.actionTaken].chip}`}>{ACTION_TONE[hit.actionTaken].label}{hit.escalatedBySeverity ? " ↑ sev" : ""}</span>}
+                          </div>
+                          <p className="mt-1 text-sm leading-relaxed text-ink-3">{rule.typesafeQuestion.instructions}</p>
                         </div>
-                        <p className="text-[13px] text-neutral-500 truncate" title={rule.typesafeQuestion.instructions}>{rule.typesafeQuestion.instructions}</p>
                       </div>
-                      <NoulBar p={p} thresholds={result?.typesafeInternals.thresholds} />
-                      <button type="button" onClick={() => testRule(rule)} disabled={busy} className="px-2 py-1.5 text-[13px] font-medium border border-emerald-700 text-emerald-300 rounded hover:bg-emerald-900/40 cursor-pointer disabled:opacity-50 shrink-0">Test</button>
-                      <button type="button" onClick={() => openEdit(rule)} className="text-[13px] text-neutral-400 hover:text-white underline cursor-pointer shrink-0">Edit</button>
-                      <ModeToggle mode={rule.mode} onChange={(m) => applyRules(rules.map((r) => (r.id === rule.id ? { ...r, mode: m } : r)))} />
+                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <NoulBar p={p} thresholds={result?.typesafeInternals.thresholds} />
+                        <button type="button" onClick={() => testRule(rule)} disabled={busy} className="px-2.5 py-1 text-[13px] font-medium rounded-lg text-emerald-300 ring-1 ring-emerald-500/40 hover:bg-emerald-500/10 cursor-pointer disabled:opacity-50 shrink-0">Test</button>
+                        <button type="button" onClick={() => openEdit(rule)} className="px-2.5 py-1 text-[13px] font-medium rounded-lg text-ink-2 ring-1 ring-line-strong hover:text-ink hover:bg-raised cursor-pointer shrink-0">Edit</button>
+                        <ModeToggle mode={rule.mode} onChange={(m) => applyRules(rules.map((r) => (r.id === rule.id ? { ...r, mode: m } : r)))} />
+                      </div>
                     </div>
                   );
                 })}
@@ -586,27 +646,30 @@ export default function App() {
 
       {/* Edit modal */}
       {editing && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-20 p-4" onClick={() => setEditing(null)}>
-          <form onSubmit={saveEdit} onClick={(e) => e.stopPropagation()} className="bg-[#111318] border border-neutral-700 rounded-lg w-full max-w-2xl p-5 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold">{editing.name} — the question is the configuration</h3>
-              <button type="button" onClick={() => setEditing(null)} className="text-neutral-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-20 p-4" onClick={() => setEditing(null)}>
+          <form onSubmit={saveEdit} onClick={(e) => e.stopPropagation()} className="card bg-surface shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-7 flex flex-col gap-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="eyebrow mb-1">Edit guardrail · the question is the configuration</div>
+                <h3 className="section-title">{editing.name}</h3>
+              </div>
+              <button type="button" onClick={() => setEditing(null)} aria-label="Close" className="p-1 rounded-md text-ink-3 hover:text-ink hover:bg-raised cursor-pointer"><X className="w-5 h-5" /></button>
             </div>
             {([
               ["ask", "Question (one yes/no)", 2],
-              ["yes", "criteria.true — what counts as yes", 2],
-              ["no", "criteria.false — what counts as no", 2],
+              ["yes", "criteria.true: what counts as yes", 2],
+              ["no", "criteria.false: what counts as no", 2],
               ["examples", "Examples of a yes (one per line)", 3],
               ["sample", "Test prompt", 2],
             ] as const).map(([k, label, rows]) => (
-              <label key={k} className="text-[13px] text-neutral-400 flex flex-col gap-1">
+              <label key={k} className="text-sm font-medium text-ink-2 flex flex-col gap-1.5">
                 {label}
-                <textarea rows={rows} value={draft[k]} onChange={(e) => setDraft({ ...draft, [k]: e.target.value })} className="bg-[#0B0D11] border border-neutral-700 rounded p-2 font-mono text-sm text-neutral-100 focus:outline-none focus:border-emerald-600" />
+                <textarea rows={rows} value={draft[k]} onChange={(e) => setDraft({ ...draft, [k]: e.target.value })} className="bg-canvas border border-line-strong rounded-lg px-3.5 py-2.5 text-[15px] font-normal leading-relaxed text-ink focus:outline-none focus:border-emerald-500" />
               </label>
             ))}
-            <div className="flex justify-end gap-2 pt-1">
-              <button type="button" onClick={() => setEditing(null)} className="px-3 py-1.5 text-sm border border-neutral-700 rounded cursor-pointer">Cancel</button>
-              <button type="submit" className="px-3 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 rounded font-semibold cursor-pointer">Save & re-evaluate</button>
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setEditing(null)} className="btn px-4 py-2 text-sm border border-line-strong hover:bg-raised">Cancel</button>
+              <button type="submit" className="btn px-4 py-2 text-sm bg-emerald-500 hover:bg-emerald-400 text-emerald-950">Save & re-evaluate</button>
             </div>
           </form>
         </div>
