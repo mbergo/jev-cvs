@@ -34,7 +34,7 @@
   --color-ink-3: #686a6d;
 
   --color-allow: #12784c;
-  --color-alert: #a8640a;
+  --color-alert: #8f5300;
   --color-block: #c43a22;
   --color-review: #2c5fc4;
   --color-jev: #6b3fcf;
@@ -72,6 +72,11 @@
   :focus-visible {
     outline: 2px solid var(--color-ink);
     outline-offset: 2px;
+  }
+
+  /* The masthead is ink, so its focus ring is paper. */
+  header :focus-visible {
+    outline-color: var(--color-canvas);
   }
 }
 
