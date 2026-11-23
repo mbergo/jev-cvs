@@ -61,11 +61,11 @@ function FlowStep({ n, title, explain, last, children }: {
   return (
     <div className="grid grid-cols-[2.25rem_minmax(0,1fr)] gap-x-4">
       <div className="flex flex-col items-center">
-        <div className="w-9 h-9 rounded-full bg-ink flex items-center justify-center font-display text-lg text-canvas">{n}</div>
-        {!last && <div className="flex-1 w-px bg-line-strong my-1" />}
+        <div className="w-9 h-9 rounded-full border border-neutral-600 bg-neutral-900 flex items-center justify-center text-base text-neutral-200">{n}</div>
+        {!last && <div className="flex-1 w-px bg-neutral-700 my-1" />}
       </div>
       <div className={last ? "" : "pb-8"}>
-        <div className="font-display text-xl font-medium text-ink pt-1">{title}</div>
+        <div className="text-lg font-semibold text-ink pt-1">{title}</div>
         <p className="text-base text-ink-2 mt-1 mb-4 max-w-3xl leading-relaxed">{explain}</p>
         {children}
       </div>
@@ -74,7 +74,7 @@ function FlowStep({ n, title, explain, last, children }: {
 }
 
 const Code = ({ children }: { children: string }) => (
-  <pre className="font-mono text-[15px] leading-relaxed whitespace-pre-wrap break-words rounded-[4px] border border-term-line bg-term p-5 text-term-ink">{children}</pre>
+  <pre className="font-mono text-[15px] leading-relaxed whitespace-pre-wrap break-words rounded-xl border border-line bg-canvas p-5 text-ink-2">{children}</pre>
 );
 
 const SUMMARY_LABEL: Record<string, string> = { primary_threat_vector: "Threat vector", threat_severity_rubric: "Severity" };
@@ -99,10 +99,10 @@ function StageCard({ i, icon, title, side, children }: {
   return (
     <motion.div
       {...stage(i)}
-      className={`flex-1 min-w-0 rounded-[4px] border p-5 ${side === "jev" ? "border-jev/30 bg-jev/[0.04]" : "border-ink/25 bg-ink/[0.03]"}`}
+      className={`flex-1 min-w-0 rounded-xl border p-5 ${side === "jev" ? "border-violet-800/70 bg-violet-950/20" : "border-emerald-800/70 bg-emerald-950/20"}`}
     >
       <div className="flex items-center gap-2 mb-3">
-        <span className="text-xs font-mono font-semibold text-ink-3">0{i + 1}</span>
+        <span className="text-sm font-mono text-neutral-500">{i + 1}</span>
         {icon}
         <span className="text-base font-semibold text-ink">{title}</span>
       </div>
@@ -112,7 +112,7 @@ function StageCard({ i, icon, title, side, children }: {
 }
 
 const Arrow = ({ i }: { i: number }) => (
-  <motion.div {...stage(i)} className="hidden 2xl:block self-center shrink-0 text-ink-3">
+  <motion.div {...stage(i)} className="hidden 2xl:block self-center shrink-0 text-neutral-600">
     <ArrowRight className="w-4 h-4" />
   </motion.div>
 );
@@ -200,33 +200,33 @@ ${guardrailAnswers.slice(0, 3).map((g) => `    "${g.id}": { "type": "noul", "nou
       {/* ── The pipeline, left to right ─────────────────────────────── */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <span className="text-base font-medium text-jev">Evaluation by Jev</span>
-          <span className="text-base font-medium text-ink">Decision by policy code</span>
+          <span className="text-base font-medium text-violet-300">Evaluation by Jev</span>
+          <span className="text-base font-medium text-emerald-300">Decision by policy code</span>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 2xl:flex items-stretch gap-3">
-          <StageCard i={0} side="jev" title="Prompt" icon={<Braces className="w-3.5 h-3.5 text-jev" />}>
-            <div><span className="font-display text-2xl text-ink">{promptLen}</span> characters</div>
-            <div className="text-ink-3 pt-1">Submitted to the gateway</div>
+          <StageCard i={0} side="jev" title="Prompt" icon={<Braces className="w-3.5 h-3.5 text-violet-300" />}>
+            <div><span className="text-white">{promptLen}</span> characters</div>
+            <div className="text-neutral-500 pt-1">Submitted to the gateway</div>
           </StageCard>
           <Arrow i={1} />
-          <StageCard i={1} side="jev" title="Guardrails" icon={<ListChecks className="w-3.5 h-3.5 text-jev" />}>
-            <div><span className="font-display text-2xl text-ink">{guardrailCount}</span> guardrails</div>
-            <div className="text-ink-3 pt-1">One yes/no question per guardrail</div>
+          <StageCard i={1} side="jev" title="Guardrails" icon={<ListChecks className="w-3.5 h-3.5 text-violet-300" />}>
+            <div><span className="text-white">{guardrailCount}</span> guardrails</div>
+            <div className="text-neutral-500 pt-1">One yes/no question per guardrail</div>
           </StageCard>
           <Arrow i={2} />
-          <StageCard i={2} side="jev" title="Jev" icon={<Cpu className="w-3.5 h-3.5 text-jev" />}>
+          <StageCard i={2} side="jev" title="Jev" icon={<Cpu className="w-3.5 h-3.5 text-violet-300" />}>
             <div>All guardrails evaluated in a single call</div>
-            <div className="text-ink-3 pt-1">Answers are returned as typed probabilities, not free text.</div>
+            <div className="text-neutral-500 pt-1">Answers are returned as typed probabilities, not free text.</div>
           </StageCard>
 
           {/* The line between evaluation and decision */}
-          <motion.div {...stage(3)} className="hidden 2xl:block self-stretch w-px border-l border-dashed border-line-strong mx-1" />
+          <motion.div {...stage(3)} className="hidden 2xl:block self-stretch w-px border-l border-dashed border-neutral-500 mx-1" />
 
-          <StageCard i={3} side="code" title="Policy" icon={<GitBranch className="w-3.5 h-3.5 text-ink" />}>
-            <div>Probability ≥ {action.toFixed(2)} → <span className="text-block">guardrail triggered</span></div>
-            <div>{review.toFixed(2)} to {action.toFixed(2)} → <span className="text-review">under review</span>; triggered only if the overall risk score is high</div>
+          <StageCard i={3} side="code" title="Policy" icon={<GitBranch className="w-3.5 h-3.5 text-emerald-300" />}>
+            <div>Probability ≥ {action.toFixed(2)} → <span className="text-rose-300">guardrail triggered</span></div>
+            <div>{review.toFixed(2)} to {action.toFixed(2)} → <span className="text-sky-300">under review</span>; triggered only if the overall risk score is high</div>
             <div>Enforce: request blocked · Alert: request flagged</div>
-            <div className="text-ink-3 pt-1">The most restrictive outcome applies</div>
+            <div className="text-neutral-500 pt-1">The most restrictive outcome applies</div>
           </StageCard>
         </div>
       </div>
@@ -235,21 +235,21 @@ ${guardrailAnswers.slice(0, 3).map((g) => `    "${g.id}": { "type": "noul", "nou
       {/* ── Trace of this request (APM style) ────────────────────────── */}
       <motion.div {...stage(4)} className="space-y-4">
         <div className="flex items-baseline justify-between">
-          <h3 className="font-display text-xl font-medium text-ink">Trace of this request</h3>
-          <div className="text-[15px] font-mono text-ink-2">{total} ms total</div>
+          <h3 className="text-lg font-semibold text-ink">Trace of this request</h3>
+          <div className="text-[15px] font-mono text-neutral-400">{total} ms total</div>
         </div>
 
-        <div className="rounded-[4px] border border-line bg-canvas p-5 space-y-3 font-mono text-sm">
+        <div className="rounded-xl border border-line bg-canvas p-5 space-y-3 font-mono text-sm">
           {[
-            { label: "Policy server", op: "POST /api/evaluate", start: 0, dur: total, color: "bg-ink", indent: false },
-            { label: "Jev", op: `POST ${ti.endpoint.replace(/^https?:\/\//, "")}`, start: jevStart, dur: ti.decisionsLatencyMs, color: "bg-jev/80", indent: true },
+            { label: "Policy server", op: "POST /api/evaluate", start: 0, dur: total, color: "bg-emerald-600/80", indent: false },
+            { label: "Jev", op: `POST ${ti.endpoint.replace(/^https?:\/\//, "")}`, start: jevStart, dur: ti.decisionsLatencyMs, color: "bg-violet-500/80", indent: true },
           ].map((span) => (
             <div key={span.label} className="grid grid-cols-[minmax(0,22rem)_1fr_4.5rem] items-center gap-4">
-              <div className={`truncate ${span.indent ? "pl-5 text-ink" : "text-ink"}`}>
-                {span.indent && <span className="text-ink-3">└ </span>}
-                {span.label} <span className="text-ink-3">{span.op}</span>
+              <div className={`truncate ${span.indent ? "pl-5 text-neutral-300" : "text-neutral-200"}`}>
+                {span.indent && <span className="text-neutral-600">└ </span>}
+                {span.label} <span className="text-neutral-500">{span.op}</span>
               </div>
-              <div className="relative h-3 rounded bg-line">
+              <div className="relative h-3 rounded bg-neutral-800/60">
                 <motion.div
                   className={`absolute inset-y-0 rounded ${span.color}`}
                   style={{ left: pct(span.start) }}
@@ -258,54 +258,54 @@ ${guardrailAnswers.slice(0, 3).map((g) => `    "${g.id}": { "type": "noul", "nou
                   transition={{ delay: 1.8, duration: 0.6, ease: "easeOut" }}
                 />
               </div>
-              <div className="text-right text-ink">{span.dur} ms</div>
+              <div className="text-right text-neutral-300">{span.dur} ms</div>
             </div>
           ))}
         </div>
 
-        <div className="rounded-[4px] border border-line overflow-hidden">
+        <div className="rounded-xl border border-line overflow-hidden">
           <div className="grid grid-cols-[minmax(0,3fr)_minmax(0,1fr)] text-base">
-            <div className="px-4 py-2.5 bg-jev/10 text-ink border-r border-line">Outbound · sent to Jev</div>
-            <div className="px-4 py-2.5 bg-jev/10 text-ink">Inbound · returned by Jev ({ti.model})</div>
+            <div className="px-4 py-2.5 bg-violet-950/40 text-neutral-200 border-r border-line">Outbound · sent to Jev</div>
+            <div className="px-4 py-2.5 bg-violet-950/40 text-neutral-200">Inbound · returned by Jev ({ti.model})</div>
           </div>
           <div className="max-h-[32rem] overflow-y-auto text-[15px]">
             <div className="grid grid-cols-[minmax(0,3fr)_minmax(0,1fr)] border-t border-line">
               <div className="px-4 py-3 border-r border-line">
-                <div className="text-ink-3 mb-1">The prompt under evaluation ({promptLen} characters)</div>
-                <div className="font-mono text-ink whitespace-pre-wrap break-words">{state.request?.prompt}</div>
+                <div className="text-neutral-500 mb-1">The prompt under evaluation ({promptLen} characters)</div>
+                <div className="font-mono text-neutral-200 whitespace-pre-wrap break-words">{state.request?.prompt}</div>
               </div>
-              <div className="px-4 py-3 text-ink-3">Read once by Jev for every question below</div>
+              <div className="px-4 py-3 text-neutral-500">Read once by Jev for every question below</div>
             </div>
             {guardrailAnswers.map((g) => {
               const status = g.p >= action ? "triggered" : g.p >= review ? "under review" : "clear";
               return (
                 <div key={g.id} className="grid grid-cols-[minmax(0,3fr)_minmax(0,1fr)] border-t border-line">
                   <div className="px-4 py-2.5 border-r border-line">
-                    <span className="text-ink">{ruleNameOf(g.id)}</span>
-                    <span className="text-ink-3"> · </span>
-                    <span className="text-ink-2">{questionText(g.id)}</span>
+                    <span className="text-neutral-200">{ruleNameOf(g.id)}</span>
+                    <span className="text-neutral-500"> · </span>
+                    <span className="text-neutral-400">{questionText(g.id)}</span>
                   </div>
                   <div className="px-4 py-2.5 flex items-baseline justify-between gap-3 font-mono">
-                    <span className={g.p >= action ? "text-block" : g.p >= review ? "text-review" : "text-ink"}>{g.p.toFixed(2)}</span>
-                    <span className={`font-sans ${g.p >= action ? "text-block" : g.p >= review ? "text-review" : "text-ink-3"}`}>{status}</span>
+                    <span className={g.p >= action ? "text-rose-300" : g.p >= review ? "text-sky-300" : "text-neutral-300"}>{g.p.toFixed(2)}</span>
+                    <span className={`font-sans ${g.p >= action ? "text-rose-300" : g.p >= review ? "text-sky-300" : "text-neutral-500"}`}>{status}</span>
                   </div>
                 </div>
               );
             })}
             {summaryIds.map((id) => (
-              <div key={id} className="grid grid-cols-[minmax(0,3fr)_minmax(0,1fr)] border-t border-line bg-raised/50">
+              <div key={id} className="grid grid-cols-[minmax(0,3fr)_minmax(0,1fr)] border-t border-line bg-neutral-900/40">
                 <div className="px-4 py-2.5 border-r border-line">
-                  <span className="text-ink">{SUMMARY_LABEL[id] ?? id}</span>
-                  <span className="text-ink-3"> · </span>
-                  <span className="text-ink-2">{questionText(id)}</span>
+                  <span className="text-neutral-200">{SUMMARY_LABEL[id] ?? id}</span>
+                  <span className="text-neutral-500"> · </span>
+                  <span className="text-neutral-400">{questionText(id)}</span>
                 </div>
-                <div className="px-4 py-2.5 font-mono text-ink">{summaryAnswer(id)}</div>
+                <div className="px-4 py-2.5 font-mono text-neutral-300">{summaryAnswer(id)}</div>
               </div>
             ))}
           </div>
         </div>
 
-        <div className="rounded-[4px] border border-line bg-raised/50 p-5 text-[15px] leading-relaxed text-ink-2 max-w-3xl">
+        <div className="rounded-xl border border-line bg-raised/50 p-5 text-[15px] leading-relaxed text-ink-2 max-w-3xl">
           <div className="font-semibold text-ink mb-1">How to read the trace</div>
           Each bar is a step of this request, measured by the server. Bar length is proportional to time.
           The Jev bar sits inside the policy server bar because the server waits for Jev before it decides.
@@ -315,7 +315,7 @@ ${guardrailAnswers.slice(0, 3).map((g) => `    "${g.id}": { "type": "noul", "nou
 
       {/* ── Request flow: what goes, what comes back, what decides, where it goes ── */}
       <motion.div {...stage(5)} className="pt-2">
-        <h3 className="font-display text-xl font-medium text-ink mb-6">Request flow</h3>
+        <h3 className="text-lg font-semibold text-ink mb-6">Request flow</h3>
 
         <FlowStep n={1} title="The prompt arrives" explain="The text a user sent to the AI application. Nothing has been checked yet.">
           <Code>{state.request?.prompt ?? ""}</Code>
@@ -333,32 +333,32 @@ ${guardrailAnswers.slice(0, 3).map((g) => `    "${g.id}": { "type": "noul", "nou
           <Code>{POLICY_CODE}</Code>
           <div className="mt-4 space-y-2.5">
             {result.triggeredRules.length === 0 && (
-              <div className="text-[15px] font-mono text-ink-2">
-                No guardrail reached the review threshold ({review.toFixed(2)}). <span className="text-allow">Request allowed.</span>
+              <div className="text-[15px] font-mono text-neutral-400">
+                No guardrail reached the review threshold ({review.toFixed(2)}). <span className="text-emerald-300">Request allowed.</span>
               </div>
             )}
             {result.triggeredRules.map((t) => (
               <div key={t.ruleId} className="flex flex-wrap items-center gap-2 text-[15px] font-mono">
-                <span className="text-ink">{t.ruleName}</span>
-                <span className="text-ink-3">→</span>
+                <span className="text-neutral-200">{t.ruleName}</span>
+                <span className="text-neutral-600">→</span>
                 <span>{t.typesafeNoulProbability?.toFixed(2)}</span>
-                <span className="text-ink-3">→</span>
+                <span className="text-neutral-600">→</span>
                 {t.escalatedBySeverity ? (
-                  <span className="text-alert">escalated by overall risk</span>
+                  <span className="text-amber-300">escalated by overall risk</span>
                 ) : (
-                  <span className={t.band === "action" ? "text-block" : "text-review"}>{t.band === "action" ? "triggered" : "under review"}</span>
+                  <span className={t.band === "action" ? "text-rose-300" : "text-sky-300"}>{t.band === "action" ? "triggered" : "under review"}</span>
                 )}
-                <span className="text-ink-3">→</span>
-                <span className="text-ink-2">{MODE_LABEL[t.mode]} mode</span>
-                <span className="text-ink-3">→</span>
-                <span className={t.actionTaken === "Enforced (Blocked)" ? "text-block" : t.actionTaken === "Flagged for Review" ? "text-review" : "text-alert"}>
+                <span className="text-neutral-600">→</span>
+                <span className="text-neutral-400">{MODE_LABEL[t.mode]} mode</span>
+                <span className="text-neutral-600">→</span>
+                <span className={t.actionTaken === "Enforced (Blocked)" ? "text-rose-300" : t.actionTaken === "Flagged for Review" ? "text-sky-300" : "text-amber-300"}>
                   {ACTION_LABEL[t.actionTaken]}
                 </span>
               </div>
             ))}
-            <div className="pt-1 text-[15px] font-mono text-ink-2">
+            <div className="pt-1 text-[15px] font-mono text-neutral-400">
               Final decision, most restrictive outcome:{" "}
-              <span className={verdict === "block" ? "text-block font-bold" : verdict === "redact" ? "text-alert font-bold" : "text-allow font-bold"}>
+              <span className={verdict === "block" ? "text-rose-300 font-bold" : verdict === "redact" ? "text-amber-300 font-bold" : "text-emerald-300 font-bold"}>
                 {VERDICT[verdict]}
               </span>
             </div>

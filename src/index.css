@@ -1,63 +1,26 @@
 @import "tailwindcss";
 
-/* Fonts are bundled with the app (no Google Fonts call), so the demo looks the
-   same offline or behind a corporate proxy. */
-@import "@fontsource-variable/fraunces/opsz.css";
-@import "@fontsource-variable/fraunces/opsz-italic.css";
-@import "@fontsource/ibm-plex-sans/400.css";
-@import "@fontsource/ibm-plex-sans/500.css";
-@import "@fontsource/ibm-plex-sans/600.css";
-@import "@fontsource/ibm-plex-mono/400.css";
-@import "@fontsource/ibm-plex-mono/500.css";
-@import "@fontsource/ibm-plex-mono/600.css";
-
-/* ─── "Signal Paper" identity ───────────────────────────────────────────────
-   A light, editorial look: warm paper surfaces, black ink, a serif display face
-   for headlines and verdicts, and a mono face for labels and numbers.
-   Colour is reserved for meaning, and each meaning has exactly one hue:
-     allow  · green       alert · ochre       block · vermilion
-     review · cobalt      jev   · violet (the model's own identity)
-   Code and payloads sit on a dark "terminal" panel (--color-term). */
+/* ─── Design tokens ─────────────────────────────────────────────────────────
+   One palette and one type scale for the whole studio. Surfaces step up in
+   lightness (canvas → surface → raised); text has three levels of emphasis. */
 @theme {
-  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-display: "Fraunces Variable", "Fraunces", Georgia, "Times New Roman", serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
-  --color-canvas: #f3efe6;
-  --color-surface: #fffdf8;
-  --color-raised: #ebe5d8;
-  --color-line: #ddd5c5;
-  --color-line-strong: #bdb3a0;
+  --color-canvas: #0a0c10;
+  --color-surface: #11141a;
+  --color-raised: #171b23;
+  --color-line: #232833;
+  --color-line-strong: #2f3542;
 
-  --color-ink: #15171a;
-  --color-ink-2: #3b4047;
-  --color-ink-3: #5f6164;
-
-  --color-allow: #12784c;
-  --color-alert: #8f5300;
-  --color-block: #c43a22;
-  --color-review: #2c5fc4;
-  --color-jev: #6b3fcf;
-
-  /* The same meanings, lightened for the ink masthead. */
-  --color-allow-on-ink: #5fd39a;
-  --color-alert-on-ink: #f0b55c;
-  --color-block-on-ink: #ff9a85;
-
-  --color-term: #17191d;
-  --color-term-ink: #d5d9df;
-  --color-term-muted: #8a9099;
-  --color-term-key: #8fb4ff;
-  --color-term-string: #e9c27a;
-  --color-term-literal: #c7adff;
-  --color-term-number: #7fd6b0;
-  --color-term-err: #ff9a85;
-  --color-term-line: #2b2f36;
+  --color-ink: #eef1f6;
+  --color-ink-2: #b4bcc8;
+  --color-ink-3: #7c8594;
 }
 
 @layer base {
   html {
-    color-scheme: light;
+    color-scheme: dark;
   }
 
   body {
@@ -78,46 +41,38 @@
   }
 
   ::selection {
-    background: rgb(107 63 207 / 0.22);
+    background: rgb(16 185 129 / 0.35);
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-ink);
+    outline: 2px solid rgb(52 211 153 / 0.8);
     outline-offset: 2px;
-  }
-
-  /* The masthead is ink, so its focus ring is paper. */
-  header :focus-visible,
-  .bg-term :focus-visible {
-    outline-color: var(--color-canvas);
   }
 }
 
 @layer components {
-  /* A content block: paper sheet, hairline border, nearly square corners. */
+  /* A content block: generous padding, soft border, rounded corners. */
   .card {
     border: 1px solid var(--color-line);
     background-color: var(--color-surface);
-    border-radius: 4px;
+    border-radius: 1rem;
   }
 
-  /* Mono label that names a section before its heading, e.g. "01 — Input". */
+  /* Small all-caps label that names a section before its heading. */
   .eyebrow {
-    font-family: var(--font-mono);
     font-size: 0.75rem;
     line-height: 1rem;
-    font-weight: 500;
-    letter-spacing: 0.12em;
+    font-weight: 600;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--color-ink-3);
   }
 
   .section-title {
-    font-family: var(--font-display);
-    font-size: 1.625rem;
-    line-height: 2rem;
-    font-weight: 500;
-    letter-spacing: -0.015em;
+    font-size: 1.25rem;
+    line-height: 1.75rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
     color: var(--color-ink);
   }
 
@@ -131,7 +86,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    border-radius: 3px;
+    border-radius: 0.625rem;
     font-weight: 600;
     cursor: pointer;
     transition: background-color 150ms, border-color 150ms, color 150ms;
@@ -139,15 +94,6 @@
   .btn:disabled {
     opacity: 0.5;
     cursor: default;
-  }
-
-  /* The signature: a thin allow / alert / block band under the masthead. */
-  .signal-band {
-    height: 4px;
-    background: linear-gradient(90deg,
-      var(--color-allow) 0 33.33%,
-      var(--color-alert) 33.33% 66.66%,
-      var(--color-block) 66.66% 100%);
   }
 }
 
@@ -158,5 +104,5 @@
 /* Thin, quiet scrollbars for the scrolling panels. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #bdb3a0 transparent;
+  scrollbar-color: #2f3542 transparent;
 }
