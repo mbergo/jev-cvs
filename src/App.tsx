@@ -93,7 +93,7 @@ function NoulBar({ p, thresholds }: { p: number | null; thresholds?: EvalResult[
   const color = band === "action" ? "bg-rose-500" : band === "review" ? "bg-sky-400" : "bg-emerald-500";
   const text = band === "action" ? "text-rose-300" : band === "review" ? "text-sky-300" : "text-ink-3";
   return (
-    <div className="flex items-center gap-3 flex-1 min-w-0">
+    <div className="flex items-center gap-3 flex-1 min-w-[10rem]">
       <div className="relative flex-1 h-1.5 bg-raised rounded-full overflow-hidden" title={`Action threshold ${action}`}>
         {p !== null && <div className={`h-full rounded-full ${color} transition-all duration-500`} style={{ width: `${Math.max(2, p * 100)}%` }} />}
         <div className="absolute -top-0.5 -bottom-0.5 w-0.5 bg-ink-3/70" style={{ left: `${action * 100}%` }} />
@@ -573,7 +573,7 @@ export default function App() {
           </div>
 
           {inside ? (
-            <div className="xl:max-h-[calc(100vh-260px)] xl:overflow-y-auto">
+            <div className="overflow-x-auto xl:max-h-[calc(100vh-260px)] xl:overflow-y-auto">
               <table className="w-full border-collapse text-[15px]">
                 <thead className="sticky top-0 bg-surface z-[1] text-xs uppercase tracking-wider text-ink-3">
                   <tr>
@@ -627,7 +627,7 @@ export default function App() {
                           <p className="mt-1 text-sm leading-relaxed text-ink-3">{rule.typesafeQuestion.instructions}</p>
                         </div>
                       </div>
-                      <div className="mt-3 flex items-center gap-3">
+                      <div className="mt-3 flex flex-wrap items-center gap-3">
                         <NoulBar p={p} thresholds={result?.typesafeInternals.thresholds} />
                         <button type="button" onClick={() => testRule(rule)} disabled={busy} className="px-2.5 py-1 text-[13px] font-medium rounded-lg text-emerald-300 ring-1 ring-emerald-500/40 hover:bg-emerald-500/10 cursor-pointer disabled:opacity-50 shrink-0">Test</button>
                         <button type="button" onClick={() => openEdit(rule)} className="px-2.5 py-1 text-[13px] font-medium rounded-lg text-ink-2 ring-1 ring-line-strong hover:text-ink hover:bg-raised cursor-pointer shrink-0">Edit</button>
