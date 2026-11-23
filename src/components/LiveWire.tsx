@@ -88,13 +88,13 @@ export default function LiveWire({ entry }: { entry: WireEntry | null }) {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
 
   return (
-    <div className="border border-neutral-700 rounded-md bg-neutral-900/60 overflow-hidden">
+    <div className="card overflow-hidden">
       {/* Header: tabs + the one-line summary of the latest round-trip */}
-      <div className="px-4 py-2.5 border-b border-neutral-800 flex items-center gap-4">
-        <div className="flex rounded border border-neutral-700 overflow-hidden shrink-0">
+      <div className="px-6 py-4 border-b border-line flex items-center gap-4">
+        <div className="flex rounded-lg border border-line-strong overflow-hidden shrink-0">
           {(["TX", "RX"] as Side[]).map((s) => (
             <button key={s} type="button" onClick={() => setSide(s)}
-              className={`px-3 py-1 text-[13px] font-mono font-semibold cursor-pointer ${side === s ? (s === "TX" ? "bg-emerald-600 text-white" : "bg-sky-600 text-white") : "bg-[#0B0D11] text-neutral-400 hover:text-white"}`}>
+              className={`px-3 py-1 text-[13px] font-mono font-semibold cursor-pointer ${side === s ? (s === "TX" ? "bg-emerald-600 text-white" : "bg-sky-600 text-white") : "bg-canvas text-neutral-400 hover:text-white"}`}>
               {s === "TX" ? "→ TX" : "← RX"}
             </button>
           ))}
@@ -133,7 +133,7 @@ export default function LiveWire({ entry }: { entry: WireEntry | null }) {
       </div>
 
       {/* Body: the payload, one side at a time */}
-      <div ref={bodyRef} className="max-h-[520px] overflow-auto bg-[#0B0D11] p-4">
+      <div ref={bodyRef} className="max-h-[520px] overflow-auto bg-canvas px-6 py-5">
         {!entry && <div className="text-sm text-neutral-600">The request body and the reply will appear here, exactly as sent on the wire.</div>}
         {entry && side === "TX" && <Json value={entry.request} />}
         {entry && side === "RX" && pending && <div className="text-sm text-neutral-500 animate-pulse">…</div>}

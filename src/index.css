@@ -1,26 +1,108 @@
 @import "tailwindcss";
 
+/* ─── Design tokens ─────────────────────────────────────────────────────────
+   One palette and one type scale for the whole studio. Surfaces step up in
+   lightness (canvas → surface → raised); text has three levels of emphasis. */
+@theme {
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-canvas: #0a0c10;
+  --color-surface: #11141a;
+  --color-raised: #171b23;
+  --color-line: #232833;
+  --color-line-strong: #2f3542;
+
+  --color-ink: #eef1f6;
+  --color-ink-2: #b4bcc8;
+  --color-ink-3: #7c8594;
+}
+
 @layer base {
-  :root {
-    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  html {
+    color-scheme: dark;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #0B0D11;
-    color: #F1F5F9;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
     margin: 0;
+    font-size: 16px;
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   code, pre, .font-mono {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+
+  ::selection {
+    background: rgb(16 185 129 / 0.35);
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(52 211 153 / 0.8);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* A content block: generous padding, soft border, rounded corners. */
+  .card {
+    border: 1px solid var(--color-line);
+    background-color: var(--color-surface);
+    border-radius: 1rem;
+  }
+
+  /* Small all-caps label that names a section before its heading. */
+  .eyebrow {
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
+
+  .section-title {
+    font-size: 1.25rem;
+    line-height: 1.75rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--color-ink);
+  }
+
+  .lead {
+    font-size: 1rem;
+    line-height: 1.7;
+    color: var(--color-ink-2);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 0.625rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 150ms, border-color 150ms, color 150ms;
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
 }
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* Thin, quiet scrollbars for the scrolling panels. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2f3542 transparent;
 }
