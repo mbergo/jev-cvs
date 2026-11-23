@@ -74,7 +74,7 @@ function FlowStep({ n, title, explain, last, children }: {
 }
 
 const Code = ({ children }: { children: string }) => (
-  <pre className="font-mono text-sm leading-relaxed whitespace-pre-wrap break-words rounded-xl border border-line bg-canvas p-5 text-ink-2">{children}</pre>
+  <pre className="font-mono text-[15px] leading-relaxed whitespace-pre-wrap break-words rounded-xl border border-line bg-canvas p-5 text-ink-2">{children}</pre>
 );
 
 const SUMMARY_LABEL: Record<string, string> = { primary_threat_vector: "Threat vector", threat_severity_rubric: "Severity" };

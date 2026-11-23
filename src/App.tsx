@@ -63,7 +63,7 @@ interface EvalResult {
     totalOutputTokens: number;
     decisionsLatencyMs: number;
     totalPipelineLatencyMs?: number;
-    requestPayload: { state: unknown; questions: Record<string, unknown> };
+    requestPayload: { model?: string; state: unknown; questions: Record<string, unknown> };
     rawAnswers: Record<string, Answer>;
   };
 }
@@ -346,7 +346,7 @@ export default function App() {
           {/* Intro */}
           <div className="max-w-3xl">
             <p className="text-[1.0625rem] leading-relaxed text-ink-2">
-              Every prompt that enters the gateway is checked against <span className="text-ink font-medium">{rules.length} guardrails</span> in a single call.
+              Every prompt that enters the gateway is checked against <span className="text-ink font-medium">{activeCount} active guardrails</span> in a single call.
               Jev answers one yes/no question per guardrail; plain policy code turns those probabilities into <span className="text-emerald-300">Allow</span>, <span className="text-amber-300">Alert</span> or <span className="text-rose-300">Block</span>. No regex.
             </p>
           </div>
@@ -540,7 +540,7 @@ export default function App() {
           {result && (
             <div className="flex flex-col gap-3">
               <Collapsible title="Request sent to POST /v1/systemone">
-                <pre className="text-[13px] leading-relaxed font-mono text-ink-2 overflow-auto max-h-96 bg-canvas p-5 rounded-xl border border-line">{JSON.stringify({ model: "jev-latest", state: result.typesafeInternals.requestPayload.state, questions: result.typesafeInternals.requestPayload.questions }, null, 2)}</pre>
+                <pre className="text-[13px] leading-relaxed font-mono text-ink-2 overflow-auto max-h-96 bg-canvas p-5 rounded-xl border border-line">{JSON.stringify({ model: result.typesafeInternals.requestPayload.model ?? "jev-latest", state: result.typesafeInternals.requestPayload.state, questions: result.typesafeInternals.requestPayload.questions }, null, 2)}</pre>
               </Collapsible>
               <Collapsible title="Raw answers from Jev">
                 <pre className="text-[13px] leading-relaxed font-mono text-ink-2 overflow-auto max-h-96 bg-canvas p-5 rounded-xl border border-line">{JSON.stringify(result.typesafeInternals.rawAnswers, null, 2)}</pre>
