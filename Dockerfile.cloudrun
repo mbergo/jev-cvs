@@ -1,0 +1,19 @@
+# jev-cvs on Cloud Run: demo (PORT 8080) + Vertex adapter (127.0.0.1:8765) in one container.
+# Build: docker build -f Dockerfile.cloudrun -t ghcr.io/mbergo/jev-cvs:cloudrun .
+FROM node:22-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+ENV NODE_ENV=development DISABLE_HMR=true PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
+    PORT=8080 TYPESAFE_MODEL=cvs-jv1 TYPESAFE_API_BASE=http://127.0.0.1:8765/v1 \
+    JEV_SHIM_KEY_FILE=/tmp/jev-shim-key
+WORKDIR /app
+COPY cloudrun/shim/requirements.txt /srv/shim/requirements.txt
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install -q -r /srv/shim/requirements.txt
+COPY cloudrun/shim/jev_shim.py cloudrun/shim/schemas.py /srv/shim/
+COPY package.json bun.lock ./
+RUN npm install -g bun --no-audit --no-fund && bun install --frozen-lockfile
+COPY . .
+COPY cloudrun/entrypoint.sh /srv/entrypoint.sh
+RUN chmod +x /srv/entrypoint.sh
+EXPOSE 8080
+CMD ["/srv/entrypoint.sh"]
