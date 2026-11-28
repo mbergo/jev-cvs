@@ -1,5 +1,6 @@
 import express from "express";
 import http from "http";
+import { timingSafeEqual } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { loadTypeSafeKey } from "./src/server/typesafeKey";
@@ -176,6 +177,19 @@ interface TriggeredRuleReport {
 
 async function startServer() {
   const app = express();
+  // Access gate for shared deployments: set DEMO_PASSWORD and every request must send it
+  // as HTTP Basic auth (any user name). Unset = open, as before.
+  const demoPassword = process.env.DEMO_PASSWORD?.trim();
+  if (demoPassword) {
+    app.use((req, res, next) => {
+      const hdr = req.headers.authorization ?? "";
+      const given = hdr.startsWith("Basic ") ? Buffer.from(hdr.slice(6), "base64").toString("utf8").split(":").slice(1).join(":") : "";
+      const a = Buffer.from(given, "utf8"), b = Buffer.from(demoPassword, "utf8");
+      const ok = a.length === b.length && timingSafeEqual(a, b);
+      if (ok) return next();
+      res.set("WWW-Authenticate", 'Basic realm="jev-cvs"').status(401).send("Authentication required");
+    });
+  }
   app.use(express.json({ limit: "2mb" }));
 
   // Endpoint 0: Live TypeSafe Endpoint Access & Models Check (No fallback)
